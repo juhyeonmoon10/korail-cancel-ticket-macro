@@ -57,6 +57,24 @@ $optionsArgs = $commonArgs + @(('/out:' + $optionsExe), (Join-Path $sourceRoot '
 if ($LASTEXITCODE -ne 0) { throw 'Refresh options test compilation failed.' }
 & $optionsExe
 if ($LASTEXITCODE -ne 0) { throw 'Refresh options tests failed.' }
+$queueExe = Join-Path $binRoot 'BookingQueueTests.exe'
+$queueArgs = $commonArgs + @(('/out:' + $queueExe), (Join-Path $sourceRoot 'BookingAttempt.cs'), (Join-Path $sourceRoot 'RefreshOptions.cs'), (Join-Path $sourceRoot 'BookingQueue.cs'), (Join-Path $sourceRoot 'BookingQueueTests.cs'))
+& $compiler @queueArgs
+if ($LASTEXITCODE -ne 0) { throw 'Booking queue test compilation failed.' }
+& $queueExe (Join-Path $dataRoot 'queue')
+if ($LASTEXITCODE -ne 0) { throw 'Booking queue tests failed.' }
+$memoryExe = Join-Path $binRoot 'SelectionMemoryTests.exe'
+$memoryArgs = $commonArgs + @(('/out:' + $memoryExe), (Join-Path $sourceRoot 'BookingAttempt.cs'), (Join-Path $sourceRoot 'BookingSelection.cs'), (Join-Path $sourceRoot 'RefreshOptions.cs'), (Join-Path $sourceRoot 'BookingQueue.cs'), (Join-Path $sourceRoot 'SelectionMemory.cs'), (Join-Path $sourceRoot 'SelectionMemoryTests.cs'))
+& $compiler @memoryArgs
+if ($LASTEXITCODE -ne 0) { throw 'Selection memory test compilation failed.' }
+& $memoryExe (Join-Path $dataRoot 'selection-memory')
+if ($LASTEXITCODE -ne 0) { throw 'Selection memory tests failed.' }
+$progressExe = Join-Path $binRoot 'QueueQueryProgressTests.exe'
+$progressArgs = $commonArgs + @(('/out:' + $progressExe), (Join-Path $sourceRoot 'QueueQueryProgress.cs'), (Join-Path $sourceRoot 'QueueQueryProgressTests.cs'))
+& $compiler @progressArgs
+if ($LASTEXITCODE -ne 0) { throw 'Queue query progress test compilation failed.' }
+& $progressExe
+if ($LASTEXITCODE -ne 0) { throw 'Queue query progress tests failed.' }
 $inputExe = Join-Path $binRoot 'NativeInputPolicyTests.exe'
 $inputArgs = $commonArgs + @(('/out:' + $inputExe), (Join-Path $sourceRoot 'NativeMouseInput.cs'), (Join-Path $sourceRoot 'NativeInputPolicyTests.cs'))
 & $compiler @inputArgs

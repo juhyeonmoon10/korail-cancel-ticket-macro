@@ -17,7 +17,7 @@ internal sealed class RefreshSettingsDialog : Form
     public RefreshOptions SelectedOptions { get; private set; }
     public bool BookWhenAvailable { get { return book.Checked; } }
 
-    public RefreshSettingsDialog(RefreshOptions current, Font font)
+    public RefreshSettingsDialog(RefreshOptions current, Font font, bool queueMode = false)
     {
         UiTheme.StyleForm(this);
         Text = "마우스 자동 조회"; ClientSize = new Size(720, 620);
@@ -56,6 +56,13 @@ internal sealed class RefreshSettingsDialog : Form
             SelectedOptions = selected; DialogResult = DialogResult.OK;
         };
         ValidateInputs();
+        if (queueMode)
+        {
+            Text = "예약 순서에 추가"; heading.Text = "이 예약의 조회 설정";
+            intro.Text = "날짜·구간·후보 열차와 함께 저장합니다. 후보 중 한 편만 예약합니다.";
+            book.Checked = true; book.Enabled = false;
+            start.Text = "예약 순서에 추가"; start.AccessibleName = start.Text;
+        }
     }
 
     static Label Caption(string text, int left, int top, int width)

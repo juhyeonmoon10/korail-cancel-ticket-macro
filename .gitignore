@@ -24,6 +24,8 @@
 **/settings.json.*
 **/booking-attempts.json*
 **/demo-booking-attempts.json*
+**/booking-queue.json*
+**/selected-trains.json*
 .env
 .env.*
 *.key

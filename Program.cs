@@ -18,8 +18,8 @@ using Microsoft.Win32;
 
 [assembly: AssemblyTitle("코레일 한 장 도우미 PC")]
 [assembly: AssemblyDescription("개인용 열차 예매 보조 도구 - 비공식")]
-[assembly: AssemblyVersion("0.8.5.0")]
-[assembly: AssemblyFileVersion("0.8.5.0")]
+[assembly: AssemblyVersion("0.9.0.0")]
+[assembly: AssemblyFileVersion("0.9.0.0")]
 
 internal static class Program
 {
@@ -46,7 +46,7 @@ internal static class Program
             if (!created) { MessageBox.Show("이미 실행 중입니다. 열린 코레일 도우미 창을 사용하세요.", "코레일 한 장 도우미"); return 2; }
             try
             {
-                BundleRoot = Path.Combine(DataRoot, "app-0.8.5");
+                BundleRoot = Path.Combine(DataRoot, "app-0.9.0");
                 Extract();
                 AppDomain.CurrentDomain.AssemblyResolve += delegate(object sender, ResolveEventArgs eventArgs)
                 {
@@ -129,16 +129,18 @@ internal sealed partial class MainWindow : Form
     TaskCompletionSource<bool> loadWaiter;
     public MainWindow()
     {
-        Text = "코레일 한 장 도우미 PC 0.8.5 · " + (Program.ManualDiagnostic ? "수동 진단 · 자동 기능 꺼짐" : "비공식");
+        Text = "코레일 한 장 도우미 PC 0.9.0 · " + (Program.ManualDiagnostic ? "수동 진단 · 자동 기능 꺼짐" : "비공식");
         settings = AppSettings.Load(Path.Combine(Program.DataRoot, "settings.json"));
         ClientSize = new Size(1320, 900); MinimumSize = new Size(1000, 760);
         StartPosition = FormStartPosition.CenterScreen; Font = new Font("맑은 고딕", 10);
         InitializeDesktopShell();
+        LoadSelectionMemory();
         KeyPreview = true;
         KeyDown += async delegate(object sender, KeyEventArgs e) { if (e.KeyCode == Keys.F8) { e.Handled = true; await StopHelper("F8로 중지했습니다."); } };
         Resize += async delegate {
             if (WindowState == FormWindowState.Minimized)
             {
+                StopBookingQueue("창 최소화로 예약 순서를 중지했습니다.");
                 if (CanPauseMouseBooking()) InterruptMouseBooking("창 최소화");
                 else await StopHelper("최소화하여 중지했습니다. 창을 연 뒤 다시 시작하세요.");
             }
@@ -146,7 +148,7 @@ internal sealed partial class MainWindow : Form
         };
         SystemEvents.PowerModeChanged += PowerChanged;
         SystemEvents.SessionSwitch += SessionChanged;
-        FormClosing += delegate { StopMouseBooking(null); closing = true; activeDocument = false; lease.Reset(); SystemEvents.PowerModeChanged -= PowerChanged; SystemEvents.SessionSwitch -= SessionChanged; };
+        FormClosing += delegate { StopBookingQueue("프로그램을 닫아 예약 순서를 중지했습니다."); StopMouseBooking(null); closing = true; activeDocument = false; lease.Reset(); SystemEvents.PowerModeChanged -= PowerChanged; SystemEvents.SessionSwitch -= SessionChanged; };
         FormClosed += delegate { ReleaseSleepPrevention(); view.Dispose(); };
         Shown += async delegate {
             if (!Program.SelfTest && !Program.Demo && !Program.ManualDiagnostic && !settings.Telegram.HasCredentials)
@@ -158,6 +160,7 @@ internal sealed partial class MainWindow : Form
     async Task EditSettings(bool openTelegram, bool firstRun = false)
     {
         if (ready) await StopHelper("설정을 변경하기 위해 중지했습니다.");
+        string previousJourney = json.Serialize(settings.Journey);
         using (var dialog = new SettingsDialog(settings, openTelegram, firstRun))
         {
             if (dialog.ShowDialog(this) != DialogResult.OK) return;
@@ -166,7 +169,9 @@ internal sealed partial class MainWindow : Form
                 dialog.Result.Save(Path.Combine(Program.DataRoot, "settings.json"));
                 settings = dialog.Result;
                 notificationStatus.Text = settings.Telegram.Enabled ? "텔레그램 알림 켜짐 · 예약 완료 확인 후 전송" : "텔레그램 알림 꺼짐";
-                if (ready && HelperPage(view.CoreWebView2.Source)) view.Reload();
+                // Telegram changes do not affect the query or the selected trains.
+                // Only a changed journey filter requires a fresh helper instance.
+                if (ready && HelperPage(view.CoreWebView2.Source) && previousJourney != json.Serialize(settings.Journey)) view.Reload();
             }
             catch { MessageBox.Show("설정을 저장하지 못했습니다. 저장 폴더를 확인하세요.", "저장 실패"); }
         }
@@ -239,7 +244,7 @@ internal sealed partial class MainWindow : Form
                 view.CoreWebView2.ScriptDialogOpening += MouseScriptDialog;
             }
             view.CoreWebView2.NewWindowRequested += async delegate { await StopHelper("새 창이 열려 중지했습니다. 로그인·예약·결제 결과를 직접 확인하세요."); };
-            view.CoreWebView2.ProcessFailed += delegate { StopMouseBooking(null); activeDocument = false; lease.Reset(); status.Text = "브라우저가 종료됐습니다. 앱을 다시 실행하세요."; };
+            view.CoreWebView2.ProcessFailed += delegate { StopBookingQueue("브라우저가 종료되어 예약 순서를 중지했습니다."); StopMouseBooking(null); activeDocument = false; lease.Reset(); status.Text = "브라우저가 종료됐습니다. 앱을 다시 실행하세요."; };
             ready = true;
             if (Program.SelfTest) await RunTests();
             else Navigate(LocalBase + (Program.Demo ? "demo.html" : "welcome.html"));
@@ -272,16 +277,21 @@ internal sealed partial class MainWindow : Form
         activeDocument = false; lease.Reset();
         if (mouseBookingActive && !mouseSubmitted) StopMouseBooking("페이지 경로가 바뀌어 마우스 자동 진행을 중지했습니다.");
         int page = navigation;
-        const string reason = "화면이 바뀌어 선택을 초기화했습니다. 조회 버튼과 원하는 열차를 다시 선택하세요.";
+        const string reason = "화면이 바뀌어 진행을 멈췄습니다. 저장한 열차는 같은 조회 결과에서 복원됩니다.";
         try
         {
             bool reset = await EvalBool("window.KorailDesktopHelper && typeof window.KorailDesktopHelper.reset === 'function' && window.KorailDesktopHelper.reset(" + json.Serialize(reason) + ")");
             if (closing || page != navigation || view.CoreWebView2.Source != source) return;
             activeDocument = reset && !siteDiagnostics.SiteBlocked && HelperPage(source) && WindowState != FormWindowState.Minimized;
-            if (reset && HelperPage(source)) RegisterNotificationPage();
+            if (reset && HelperPage(source))
+            {
+                RegisterNotificationPage();
+                if (!Program.SelfTest) await RestoreSavedSelection();
+                if (closing || page != navigation || view.CoreWebView2.Source != source) return;
+            }
             status.Text = siteDiagnostics.SiteBlocked ? SiteBlockMessage() : reason;
         }
-        catch { if (!closing && page == navigation) status.Text = "화면이 바뀌어 도우미를 중지했습니다. 새로고침 후 다시 선택하세요."; }
+        catch { if (!closing && page == navigation) status.Text = "화면이 바뀌어 도우미를 중지했습니다. 저장한 열차는 유지되며 조회 결과에서 다시 확인할 수 있습니다."; }
     }
     void NavigationStarting(object sender, CoreWebView2NavigationStartingEventArgs e)
     {
@@ -322,7 +332,8 @@ internal sealed partial class MainWindow : Form
             {
                 activeDocument = !siteDiagnostics.SiteBlocked;
                 RegisterNotificationPage();
-                string script = "(() => { const desktopNativeMore = " + (Program.SelfTest ? "false" : "true") + "; const desktopNonce = " + json.Serialize(nonce) + "; const desktopJourney = " + json.Serialize(settings.Journey) + ";\n" + File.ReadAllText(Path.Combine(Program.BundleRoot, "core.js")) + "\n" + File.ReadAllText(Path.Combine(Program.BundleRoot, "korail-site.js")) + "\n" + File.ReadAllText(Path.Combine(Program.BundleRoot, "site-block.js")) + "\n" + File.ReadAllText(Path.Combine(Program.BundleRoot, "content.js")) + "\n})();";
+                string retained = Program.SelfTest || view.CoreWebView2.Source.StartsWith(LocalBase) ? "" : " const desktopSelection = " + json.Serialize(savedSelection == null ? null : savedSelection.ForPage()) + ";\n";
+                string script = "(() => { const desktopNativeMore = " + (Program.SelfTest ? "false" : "true") + "; const desktopNonce = " + json.Serialize(nonce) + "; const desktopJourney = " + json.Serialize(settings.Journey) + ";\n" + retained + File.ReadAllText(Path.Combine(Program.BundleRoot, "core.js")) + "\n" + File.ReadAllText(Path.Combine(Program.BundleRoot, "korail-site.js")) + "\n" + File.ReadAllText(Path.Combine(Program.BundleRoot, "site-block.js")) + "\n" + File.ReadAllText(Path.Combine(Program.BundleRoot, "content.js")) + "\n})();";
                 string result = await view.CoreWebView2.ExecuteScriptAsync(script);
                 if (page != navigation) return;
                 bool injected = await EvalBool("!!window.KorailDesktopHelper");
@@ -344,7 +355,7 @@ internal sealed partial class MainWindow : Form
         if (closing || Program.ManualDiagnostic || !HelperPage(e.Source)) return;
         try
         {
-            string raw = e.WebMessageAsJson; if (raw.Length > 4096) return;
+            string raw = e.WebMessageAsJson; if (raw.Length > 32768) return;
             var data = json.Deserialize<Dictionary<string, object>>(raw);
             string kind = Get(data, "kind");
             if (kind == "reservationClick")
@@ -358,6 +369,22 @@ internal sealed partial class MainWindow : Form
                 return;
             }
             if (Get(data, "nonce") != nonce || e.Source != view.CoreWebView2.Source) return;
+            if (kind == "selectionSaved" || kind == "selectionCleared")
+            {
+                if (Program.SelfTest || !activeDocument || queueRunning || !OfficialTicketSource(e.Source)) return;
+                if (kind == "selectionSaved")
+                {
+                    Uri selectionSource;
+                    if (!Uri.TryCreate(e.Source, UriKind.Absolute, out selectionSource) || selectionSource.AbsolutePath != "/ticket/search/list") return;
+                    ReceiveSelection(data);
+                }
+                else
+                {
+                    if (File.Exists(SelectionFile)) File.Delete(SelectionFile);
+                    savedSelection = null;
+                }
+                return;
+            }
             if (kind == "siteBlocked")
             {
                 if (OfficialTicketSource(e.Source)) ObserveSiteBlock(Get(data, "code"));
@@ -404,8 +431,9 @@ internal sealed partial class MainWindow : Form
             view.CoreWebView2.PostWebMessageAsJson(json.Serialize(new { kind = "notificationStatus", text = result, nonce = nonce }));
     }
     static string Get(Dictionary<string, object> data, string key) { object value; return data.TryGetValue(key, out value) && value != null ? Convert.ToString(value) : ""; }
-    async Task StopHelper(string reason)
+    async Task StopHelper(string reason, bool preserveQueue = false)
     {
+        if (!preserveQueue) StopBookingQueue(reason);
         StopMouseBooking(reason);
         int stoppedGeneration = mouseGeneration;
         activeDocument = false; lease.Reset(); int page = navigation;
@@ -662,6 +690,7 @@ internal sealed partial class MainWindow : Form
             await RunRefreshTimingTests();
             RenderSettingsPreview();
             await RunShellPreviewChecks();
+            await RunBookingQueueSelfTests();
             var testLease = new LeaseGate();
             Assert(testLease.Request("acquire", "old", true) && !testLease.Request("acquire", "new", true), "native lease: one owner");
             testLease.Request("release", "other", true);

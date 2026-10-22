@@ -4,6 +4,9 @@
   const isDemo = location.hostname === 'korail-helper.invalid';
   const bridgeNonce = desktopNonce;
   const nativeMore = typeof desktopNativeMore !== 'undefined' && desktopNativeMore === true;
+  // The host supplies only validated train identities and query fields. Browser
+  // selectors, coordinates and in-flight reservation state are never retained.
+  const selectionMemoryEnabled = typeof desktopSelection !== 'undefined';
   if (!isDemo && globalThis.KorailSiteBlock) {
     globalThis.KorailSiteBlock.install(document, code => {
       chrome.webview.postMessage({ kind: 'siteBlocked', code, nonce: bridgeNonce });
@@ -55,7 +58,7 @@
         <label>조회 화면의 열차<select id="trainChoice"><option value="">먼저 열차 목록을 읽어주세요.</option></select></label>
         <label>여러 열차번호 (선택)<input id="trainNumbers" type="text" placeholder="505,541,561" autocomplete="off"></label>
         <p class="muted small">쉼표로 최대 20개를 입력하세요. 비워두면 위 목록의 열차 한 개를 선택합니다.</p>
-        <div class="row"><button id="applyTrain">열차 선택 적용</button><button id="pickSeat">좌석 칸 직접 지정</button></div>
+        <div class="row"><button id="applyTrain">열차 선택 적용</button><button id="clearSavedSelection">선택 초기화</button><button id="pickSeat">좌석 칸 직접 지정</button></div>
         <p id="target" class="muted">아직 지정하지 않았습니다.</p>
         <div class="row"><label>조회 간격 (초)<input id="interval" type="number" min="60" max="3600" value="120"></label><label>최대 추가 조회<input id="limit" type="number" min="1" max="120" value="30"></label></div>
         <label class="check"><input id="auto" type="checkbox"><span>좌석 발견 시 예매 버튼을 한 번 클릭<br><span class="muted">이후 화면과 예약 성공 여부는 직접 확인</span></span></label>
@@ -70,6 +73,7 @@
   const $ = id => shadow.getElementById(id);
   let searchConfig, targetConfig, picking = null, highlighted = null, oldOutline = '';
   let trainCandidates = [], targetConfigs = [], ambiguousTrainNumbers = new Set(), selectionContext = null, manualPrepared = null, reservationClicks = 0;
+  let savedSelection = null, memoryRestoreSuspended = false, restoringSelection = false, restoreTimer = null;
   let running = false, starting = false, generation = 0, timer, watchdog, observer;
   let trainReadRequested = false;
   let session, count = 0, audio, pendingRefresh = null;
@@ -220,6 +224,94 @@
     return { identity: C.identity(row.innerText), tag: row.localName, schema: schema(row), slotPath: path(slot, row), grade, autoCapable };
   }
   function trainNumber(identity) { return String(Number(identity.train.match(/\d+$/)?.[0])); }
+  function retainedQuery(query) {
+    if (!query || query.supported !== true || !validDate(query.date) || query.passengers !== 1 || query.route !== '직통' ||
+        !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(query.fromTime || '') ||
+        ![query.departureStation, query.arrivalStation, query.seatAttribute].every(value => typeof value === 'string' && value.length > 0 && value.length <= 40) ||
+        query.departureStation === query.arrivalStation || query.roundTrip !== false || query.adjacent !== false || query.combined !== false) return null;
+    return { supported: true, date: query.date, departureStation: query.departureStation, arrivalStation: query.arrivalStation,
+      fromTime: query.fromTime, passengers: 1, route: query.route, roundTrip: false, adjacent: false, combined: false, seatAttribute: query.seatAttribute };
+  }
+  function retainedSelection(value) {
+    const query = retainedQuery(value?.query);
+    if (!query || !Array.isArray(value.targets) || value.targets.length < 1 || value.targets.length > 20) return null;
+    const numbers = new Set(), targets = [];
+    for (const item of value.targets) {
+      if (!item || typeof item.train !== 'string' || !/^(?:KTX(?:-(?:산천|이음|청룡))?|ITX-(?:새마을|마음|청춘)|새마을(?:호)?|무궁화(?:호)?|누리로|남도해양열차) [1-9]\d{0,4}$/.test(item.train) ||
+          ![item.departure, item.arrival].every(time => typeof time === 'string' && /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(time)) ||
+          !['일반실', '특실', '우등실'].includes(item.grade) || item.autoCapable !== true) return null;
+      const number = trainNumber(item);
+      if (numbers.has(number) || (targets.length && item.grade !== targets[0].grade)) return null;
+      numbers.add(number);
+      targets.push({ train: item.train, departure: item.departure, arrival: item.arrival, grade: item.grade, autoCapable: true });
+    }
+    return { query, targets, confirmed: value.confirmed === true };
+  }
+  function plainTargets(configs = targetConfigs) {
+    return configs.map(item => ({ train: item.identity.train, departure: item.identity.departure, arrival: item.identity.arrival, grade: item.grade, autoCapable: item.autoCapable }));
+  }
+  function rememberSelection() {
+    if (!selectionMemoryEnabled || restoringSelection || !cardPage() || !targetConfigs.length) return;
+    const next = retainedSelection({ query: S.query(document), targets: plainTargets(), confirmed: $('confirmed').checked });
+    if (!next) return;
+    savedSelection = next; memoryRestoreSuspended = false;
+    try { chrome.webview.postMessage({ kind: 'selectionSaved', nonce: bridgeNonce,
+      selection: { targets: next.targets.map(item => ({ ...item })), confirmed: next.confirmed }, query: { ...next.query } }); } catch {}
+  }
+  function queueSelectionRestore() {
+    if (!selectionMemoryEnabled || restoreTimer !== null || memoryRestoreSuspended || targetConfigs.length || !savedSelection) return;
+    restoreTimer = setTimeout(() => { restoreTimer = null; tryRestoreSelection(); }, 100);
+  }
+  function tryRestoreSelection() {
+    if (!selectionMemoryEnabled || memoryRestoreSuspended || restoringSelection || !savedSelection || targetConfigs.length ||
+        running || starting || picking || trainReadRequested || !cardPage() || blocked() || busy()) return false;
+    const currentQuery = retainedQuery(S.query(document));
+    if (!currentQuery || JSON.stringify(currentQuery) !== JSON.stringify(savedSelection.query)) return false;
+    const refresh = S.activeRefresh(document);
+    if (!refresh || !enabled(refresh.element)) return false;
+    const grade = savedSelection.targets[0].grade;
+    const fresh = S.cards(document).map(row => ({ row, identity: S.identity(row), slot: S.slot(row, grade) }))
+      .filter(item => visible(item.row) && item.identity && item.slot && visible(item.slot));
+    const restored = [];
+    for (const wanted of savedSelection.targets) {
+      const matches = fresh.filter(item => trainNumber(item.identity) === trainNumber(wanted));
+      if (matches.length !== 1 || matches[0].identity.train !== wanted.train || matches[0].identity.departure !== wanted.departure || matches[0].identity.arrival !== wanted.arrival) return false;
+      restored.push({ adapter: 'korail-card', identity: matches[0].identity, grade, autoCapable: true, selectionConditions: conditions() });
+    }
+    restoringSelection = true;
+    try {
+      for (const config of restored) { assertJourney(config); findTarget(config); }
+      $('grade').value = grade;
+      $('trainNumbers').value = savedSelection.targets.map(trainNumber).join(',');
+      trainCandidates = fresh.filter(item => matchesJourney(item.identity, grade))
+        .map(item => ({ adapter: 'korail-card', identity: item.identity, grade, autoCapable: true, selectionConditions: conditions() }));
+      ambiguousTrainNumbers = new Set();
+      renderTrainChoices();
+      $('trainChoice').value = String(trainCandidates.findIndex(item => item.identity.key === restored[0].identity.key));
+      searchConfig = { adapter: 'korail-card', path: refresh.selector, label: refresh.label };
+      selectTargets(restored);
+      $('confirmed').checked = savedSelection.confirmed;
+      status(`저장한 열차 ${restored.length}개를 같은 날짜·구간·시각·등급으로 복원했습니다. ${savedSelection.confirmed ? '실행하려면 상단 시작 버튼을 누르세요.' : '여정 확인란을 체크한 뒤 실행하세요.'}`);
+      return true;
+    } catch { clearSelection(); preview(); return false; }
+    finally { restoringSelection = false; }
+  }
+  function restoreSelection(value) {
+    if (!selectionMemoryEnabled || running || starting) return false;
+    const next = retainedSelection(value);
+    if (!next) return false;
+    clearTimeout(restoreTimer); restoreTimer = null;
+    clearSelection(); savedSelection = next; memoryRestoreSuspended = false;
+    $('grade').value = next.targets[0].grade;
+    $('trainNumbers').value = next.targets.map(trainNumber).join(',');
+    preview();
+    tryRestoreSelection();
+    return true;
+  }
+  function renderTrainChoices() {
+    $('trainChoice').replaceChildren(new Option(trainCandidates.length ? '원하는 열차를 골라주세요.' : '조건에 맞는 열차를 읽지 못했습니다.', ''));
+    trainCandidates.forEach((item, index) => $('trainChoice').add(new Option(`${item.identity.train} · ${item.identity.departure} → ${item.identity.arrival} · ${item.grade}`, String(index))));
+  }
   function clearSelection() {
     targetConfig = null; targetConfigs = []; selectionContext = null; manualPrepared = null;
     $('confirmed').checked = false;
@@ -228,16 +320,22 @@
     return JSON.stringify({ url: location.href, conditions: conditions(), grade: $('grade').value, numbers: $('trainNumbers').value, option: $('trainChoice').value });
   }
   function validateSelectionState() {
-    if (!targetConfigs.length) return;
+    if (!targetConfigs.length) { queueSelectionRestore(); return; }
     try { if (selectionContext === selectionState()) return; } catch { /* A removed query is also a changed query. */ }
+    if (selectionMemoryEnabled && selectionContext) {
+      const previous = JSON.parse(selectionContext);
+      if (previous.grade !== $('grade').value || previous.numbers !== $('trainNumbers').value || previous.option !== $('trainChoice').value) memoryRestoreSuspended = true;
+    }
     clearSelection(); preview();
     status('조회 조건이나 열차 선택이 바뀌었습니다. 열차를 다시 적용하고 확인하세요.');
+    queueSelectionRestore();
   }
   function selectTargets(configs) {
     for (const config of configs) { assertJourney(config); findTarget(config); }
     targetConfigs = configs.slice(); targetConfig = targetConfigs[0] || null;
     selectionContext = selectionState();
     preview();
+    rememberSelection();
   }
   function scanTrains() {
     if (running || starting) return false;
@@ -272,10 +370,10 @@
       const duplicateKeys = new Set(trainCandidates.filter((item, index, list) => list.some((other, otherIndex) => index !== otherIndex && item.identity.key === other.identity.key && item.grade === other.grade)).map(item => item.identity.key + '|' + item.grade));
       for (const item of trainCandidates) if (duplicateKeys.has(item.identity.key + '|' + item.grade)) ambiguousTrainNumbers.add(trainNumber(item.identity));
       trainCandidates = trainCandidates.filter(item => !duplicateKeys.has(item.identity.key + '|' + item.grade));
-      $('trainChoice').replaceChildren(new Option(trainCandidates.length ? '원하는 열차를 골라주세요.' : '조건에 맞는 열차를 읽지 못했습니다.', ''));
-      trainCandidates.forEach((item, index) => $('trainChoice').add(new Option(`${item.identity.train} · ${item.identity.departure} → ${item.identity.arrival} · ${item.grade}`, String(index))));
+      renderTrainChoices();
       $('confirmed').checked = false;
       status(trainCandidates.length ? `${trainCandidates.length}개 열차를 읽었습니다. 목록에서 고르거나 여러 번호를 입력한 뒤 ‘열차 선택 적용’을 누르세요.${duplicateKeys.size ? '\n중복되어 구분할 수 없는 열차는 제외했습니다.' : ''}` : '열차를 읽지 못했습니다. 실제 조회 결과와 저장한 조건을 확인하거나 좌석 칸을 직접 지정하세요.');
+      tryRestoreSelection();
       return true;
     } catch (error) { trainCandidates = []; $('trainChoice').replaceChildren(new Option('목록을 다시 읽어주세요.', '')); status(error.message); return false; }
   }
@@ -293,6 +391,7 @@
   }
   function applyTrain() {
     if (trainReadRequested || running || starting) return;
+    memoryRestoreSuspended = true;
     clearSelection(); preview();
     try {
       const numbers = C.parseTrainNumbers($('trainNumbers').value);
@@ -385,8 +484,8 @@
     assertJourney(targetConfig);
   }
   function setControls() {
-    for (const id of ['pickSearch', 'pickSeat', 'grade', 'scanTrains', 'trainChoice', 'trainNumbers', 'applyTrain', 'interval', 'limit', 'auto', 'confirmed', 'start']) $(id).disabled = running || starting;
-    if (trainReadRequested) for (const id of ['pickSearch', 'pickSeat', 'grade', 'scanTrains', 'trainChoice', 'trainNumbers', 'applyTrain', 'confirmed', 'start']) $(id).disabled = true;
+    for (const id of ['pickSearch', 'pickSeat', 'grade', 'scanTrains', 'trainChoice', 'trainNumbers', 'applyTrain', 'clearSavedSelection', 'interval', 'limit', 'auto', 'confirmed', 'start']) $(id).disabled = running || starting;
+    if (trainReadRequested) for (const id of ['pickSearch', 'pickSeat', 'grade', 'scanTrains', 'trainChoice', 'trainNumbers', 'applyTrain', 'clearSavedSelection', 'confirmed', 'start']) $(id).disabled = true;
     $('stop').disabled = !(running || starting);
   }
   function clearHighlight() { if (highlighted) highlighted.style.outline = oldOutline; highlighted = null; }
@@ -512,7 +611,7 @@
   async function start() {
     validateSelectionState();
     if (targetConfigs.length > 1) { status('여러 열차 실행은 EXE 상단 ‘마우스 자동 조회’ 또는 ‘선택 열차 예약 (마우스)’을 사용하세요. 화면 안의 연습 실행은 한 열차만 지원합니다.'); return; }
-    if (!isDemo) { status('EXE 상단 ‘마우스 자동 조회’ 또는 ‘선택 열차 예약 (마우스)’을 사용하세요.'); return; }
+    if (!isDemo) { status('상단 ‘선택 열차 시작’을 누르세요. 다음 일정은 ‘예약 관리’에 추가하세요.'); return; }
     if (starting || running) return;
     if (!searchConfig || !targetConfig) { status('① 조회 버튼을 지정하고 ② 원하는 열차를 선택하세요.'); return; }
     if (!$('confirmed').checked) { status('화면의 여정·인원·열차·좌석 등급을 확인하고 확인란을 체크하세요.'); return; }
@@ -566,13 +665,19 @@
     manualPrepared = null;
     $('confirmed').checked = false;
     const descriptions = targetConfigs.map(item => `${item.identity.train} · ${item.identity.departure} → ${item.identity.arrival} · ${item.grade}`);
+    if (!descriptions.length && savedSelection) {
+      $('target').textContent = `저장한 선택 ${savedSelection.targets.length}개 · ${savedSelection.query.date}\n${savedSelection.query.departureStation} → ${savedSelection.query.arrivalStation}\n${savedSelection.targets.map((item, index) => `${index + 1}. ${item.train} · ${item.departure} → ${item.arrival} · ${item.grade}`).join('\n')}\n${memoryRestoreSuspended ? '선택을 편집 중입니다. 적용하면 저장한 선택이 바뀝니다.' : '같은 조회 결과가 표시되면 자동으로 복원합니다. 목록 뒤쪽 열차는 ‘열차 목록 읽기’를 누르세요.'}`;
+      return;
+    }
     $('target').textContent = `조회: ${searchConfig?.label || '미지정'}\n${descriptions.length > 1 ? `선택 열차 ${descriptions.length}개 (입력 순서):\n${descriptions.map((text, index) => `${index + 1}. ${text}`).join('\n')}` : `열차: ${descriptions[0] || '미지정'}`}`;
   }
   function beginPick(type) {
-    if (type === 'seat') { clearSelection(); $('trainNumbers').value = ''; }
+    if (type === 'seat') { memoryRestoreSuspended = true; clearSelection(); $('trainNumbers').value = ''; }
     // Choosing the refresh control does not replace an already applied train.
     // Reconfirm afterwards; real query changes still invalidate the selection.
-    preview(); picking = type; foldPanel(true);
+    preview();
+    if (type === 'search') rememberSelection();
+    picking = type; foldPanel(true);
     status(type === 'search' ? '사이트의 조회/검색 버튼을 클릭하세요. Esc로 취소합니다.' : '원하는 열차의 일반실/특실 칸에서 매진 표시 또는 예약 버튼을 클릭하세요. Esc로 취소합니다.');
   }
   function chosenManualAction(event) {
@@ -662,12 +767,15 @@
     stop: reason => stop(typeof reason === 'string' ? reason : '프로그램에서 중지했습니다.'),
     scanTrains,
     showTrainPanel,
+    restoreSelection,
     reset: reason => {
       stop(typeof reason === 'string' ? reason : '화면이 바뀌었습니다. 조회 버튼과 열차를 다시 선택하세요.');
       trainReadRequested = false; setControls();
       searchConfig = null; clearSelection(); trainCandidates = []; ambiguousTrainNumbers = new Set();
+      memoryRestoreSuspended = false;
       $('trainChoice').replaceChildren(new Option('화면이 바뀌었습니다. 열차 목록을 다시 읽어주세요.', ''));
       preview();
+      queueSelectionRestore();
       return true;
     },
     snapshot: () => {
@@ -696,9 +804,18 @@
   });
   $('pickSearch').onclick = () => beginPick('search'); $('pickSeat').onclick = () => beginPick('seat');
   $('scanTrains').onclick = requestTrainScan; $('applyTrain').onclick = applyTrain;
-  $('trainChoice').onchange = () => { clearSelection(); preview(); };
-  $('trainNumbers').oninput = $('trainNumbers').onchange = () => { clearSelection(); preview(); };
-  $('grade').onchange = () => { trainCandidates = []; clearSelection(); $('trainChoice').replaceChildren(new Option('등급을 바꿨습니다. 목록을 다시 읽어주세요.', '')); preview(); };
+  $('trainChoice').onchange = () => { memoryRestoreSuspended = true; clearSelection(); preview(); };
+  $('trainNumbers').oninput = $('trainNumbers').onchange = () => { memoryRestoreSuspended = true; clearSelection(); preview(); };
+  $('grade').onchange = () => { memoryRestoreSuspended = true; trainCandidates = []; clearSelection(); $('trainChoice').replaceChildren(new Option('등급을 바꿨습니다. 목록을 다시 읽어주세요.', '')); preview(); };
+  $('confirmed').onchange = rememberSelection;
+  $('clearSavedSelection').hidden = !selectionMemoryEnabled;
+  $('clearSavedSelection').onclick = () => {
+    if (running || starting || trainReadRequested) return;
+    clearTimeout(restoreTimer); restoreTimer = null; savedSelection = null; memoryRestoreSuspended = false;
+    clearSelection(); $('trainNumbers').value = ''; $('trainChoice').value = ''; preview();
+    try { chrome.webview.postMessage({ kind: 'selectionCleared', nonce: bridgeNonce }); } catch {}
+    status('저장한 열차 선택을 초기화했습니다.');
+  };
   if (journey) {
     $('journey').textContent = `저장한 여정: ${journey.DepartureStation} → ${journey.ArrivalStation}\n${journey.Date} · 출발 ${journey.FromTime}–${journey.ToTime} · ${journey.Grade}${journey.TrainNumber ? ` · 열차번호 ${journey.TrainNumber}` : ''}\n코레일에서 같은 조건으로 직접 조회하세요.`;
     $('grade').value = journey.Grade;
@@ -712,6 +829,7 @@
   selectionObserver.observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['value', 'checked', 'selected'] });
   for (const type of ['popstate', 'hashchange']) addEventListener(type, () => {
     clearSelection(); preview();
+    memoryRestoreSuspended = false; queueSelectionRestore();
   });
   if (!isDemo) {
     // Keep the legacy JavaScript input loop disabled. The native host owns mouse
@@ -721,8 +839,9 @@
     $('auto').closest('label').hidden = true;
     $('start').hidden = true;
     for (const node of [$('pickSearch'), $('interval').closest('.row'), $('auto').closest('label'), $('start')]) node.style.display = 'none';
-    shadow.querySelector('details p').textContent = '날짜·구간을 공식 화면에서 직접 조회하고 열차와 등급을 선택하세요. 확인란을 체크한 뒤 EXE 상단 ‘선택 열차 예약 (마우스)’을 누릅니다. 반복 조회는 ‘마우스 자동 조회’에서 간격과 횟수를 정하고, 필요하면 선택 열차 예매까지 진행을 체크하세요. 가격 선택과 정차 안내 확인 후 예매를 한 번 요청하며, 실제 예약 결과가 확인될 때만 텔레그램 알림을 보냅니다. 로그인·알 수 없는 안내·접근 제한에서는 중지합니다. 결제는 표시된 기한까지 직접 진행하세요.';
-    $('status').textContent = 'EXE 상단 ‘마우스 자동 조회’에서 반복 조회 설정 · 예매하려면 열차와 등급 선택';
+    shadow.querySelector('details p').textContent = '날짜·구간을 직접 조회하고 열차·등급을 적용한 뒤 확인란을 체크하세요. 상단 ‘선택 열차 시작’에서 조회 간격과 예매 여부를 정합니다. 여러 후보 중 한 편의 예약이 확인되면 종료합니다. 다음 일정도 이어서 예약하려면 ‘예약 관리 → 현재 선택을 순서에 추가’로 각 일정을 저장하고 ‘예약 순서 시작’을 누르세요. 저장한 열차는 같은 조회 결과에서 복원되며 자동 시작되지는 않습니다. 예약 완료가 확인될 때만 알림을 보냅니다. 결제는 직접 진행하세요.';
+    $('status').textContent = '열차·등급 선택 → 확인란 체크 → 상단 ‘선택 열차 시작’ · 다음 일정은 ‘예약 관리’';
     $('notification').textContent = '텔레그램 알림은 예약 완료 확인 후 전송합니다. 버튼 클릭만으로 성공 알림을 보내지 않습니다.';
   }
+  if (selectionMemoryEnabled && desktopSelection) restoreSelection(desktopSelection);
 })();

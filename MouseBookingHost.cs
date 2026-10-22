@@ -97,11 +97,11 @@ internal sealed partial class MainWindow
             throw new InvalidOperationException("화면 좌표를 확인하지 못했습니다.");
         return result;
     }
-    async Task StartMouseBooking(bool enableRefresh = false)
+    async Task StartMouseBooking(bool enableRefresh = false, BookingQueueJob queuedJob = null)
     {
         if (!ready || closing) return;
         if (!AutomationAvailable()) return;
-        Task stopping = StopHelper("선택한 열차의 마우스 예약을 준비합니다.");
+        Task stopping = StopHelper("선택한 열차의 마우스 예약을 준비합니다.", queuedJob != null);
         int startRun = mouseGeneration;
         await stopping;
         if (startRun != mouseGeneration || closing) return;
@@ -114,10 +114,17 @@ internal sealed partial class MainWindow
             if (startRun != mouseGeneration || closing) return;
             var data = json.Deserialize<Dictionary<string, object>>(raw);
             var selection = ObjectValue(data, "selection"); var query = ObjectValue(data, "query");
-            mouseTargets = BookingSelection.FromSnapshot(selection, query);
+            if (queuedJob == null) mouseTargets = BookingSelection.FromSnapshot(selection, query);
+            else
+            {
+                if (!queueRunning || queueJob == null || queueJob.Id != queuedJob.Id || mouseDemo ||
+                    SavedTrainSelection.QueryText(query, queuedJob.Targets) != queuedJob.QueryJson)
+                    throw new InvalidOperationException("예약 순서의 저장 조건과 실제 조회 화면이 다릅니다.");
+                mouseTargets = queuedJob.Targets.Select(target => target.Copy()).ToList();
+            }
             mouseTarget = mouseTargets[0].Copy();
             if (!mouseDemo && String.CompareOrdinal(mouseTarget.Date, DateTime.Today.ToString("yyyy-MM-dd")) < 0) throw new InvalidOperationException("과거 날짜는 예약할 수 없습니다. 다시 조회하세요.");
-            if (!mouseDemo && settings.Journey.Enabled)
+            if (!mouseDemo && queuedJob == null && settings.Journey.Enabled)
             {
                 var j = settings.Journey;
                 var allowedNumbers = TrainNumberSelection.Parse(j.TrainNumber);
@@ -195,6 +202,7 @@ internal sealed partial class MainWindow
         }
         mouseCompletionRecheck = false;
         mouseTargets = null;
+        QueueBookingStopped(reason);
         if (!closing && reason != null) status.Text = reason;
         if (!closing) UpdateShellState();
     }
@@ -243,17 +251,27 @@ internal sealed partial class MainWindow
                 var receipt = BookingReceipt.CreateConfirmed(mouseTarget, observedTarget, Get(result, "reservationNumber"), Get(result, "paymentDeadline"), String.IsNullOrEmpty(evidenceType) ? null : evidenceType, String.IsNullOrEmpty(seat) ? null : seat);
                 var completedStore = mouseStore; string completedId = mouseAttemptId; var completedTarget = mouseTarget.Copy(); var completedTelegram = settings.Telegram.Copy();
                 completedStore.RecordConfirmed(completedId, receipt);
+                int completedQueueGeneration = ConfirmQueuedBooking(completedStore.Get(completedId));
                 // Disarm before network I/O. A Telegram failure can never trigger another booking.
                 mouseSubmitted = false; StopMouseBooking(null);
                 status.Text = "예약 완료 확인 · 미결제 · 공식 화면에 표시된 기한까지 직접 결제하세요.";
                 if (mouseDemo) { notificationStatus.Text = "모의 예약 완료 확인 · 실제 텔레그램 전송 없음"; return; }
-                if (!completedStore.BeginNotification(completedId)) { notificationStatus.Text = "이 예약의 알림 전송 이력이 있습니다. 중복 전송하지 않았습니다."; return; }
-                notificationStatus.Text = "예약 완료 확인 · 텔레그램 전송 중…";
-                string sent = await TelegramNotifier.SendAsync(completedTelegram, receipt.BuildTelegramMessage(completedTarget));
-                bool success = sent == TelegramNotifier.SuccessMessage;
-                try { completedStore.CompleteNotification(completedId, success, success ? "" : sent); }
-                catch { if (!closing) notificationStatus.Text = "예약은 확인됐지만 알림 결과 기록에 실패했습니다. 실제 Telegram 대화를 확인하세요."; return; }
-                if (!closing) notificationStatus.Text = success ? "예약 완료 · 텔레그램 알림 전송 완료" : "예약은 확인됐지만 알림 전송을 확인하지 못했습니다. " + sent;
+                try
+                {
+                    WatchQueueNotification(completedQueueGeneration);
+                    if (!completedStore.BeginNotification(completedId)) { notificationStatus.Text = "이 예약의 알림 전송 이력이 있습니다. 중복 전송하지 않았습니다."; ContinueQueueAfterNotification(completedQueueGeneration); return; }
+                    notificationStatus.Text = "예약 완료 확인 · 텔레그램 전송 중…";
+                    string sent = await TelegramNotifier.SendAsync(completedTelegram, receipt.BuildTelegramMessage(completedTarget));
+                    bool success = sent == TelegramNotifier.SuccessMessage;
+                    completedStore.CompleteNotification(completedId, success, success ? "" : sent);
+                    if (!closing) notificationStatus.Text = success ? "예약 완료 · 텔레그램 알림 전송 완료" : "예약은 확인됐지만 알림 전송을 확인하지 못했습니다. " + sent;
+                    ContinueQueueAfterNotification(completedQueueGeneration);
+                }
+                catch
+                {
+                    if (!closing) notificationStatus.Text = "예약은 확인됐지만 알림 처리를 마치지 못했습니다. 실제 Telegram 대화를 확인하세요.";
+                    if (completedQueueGeneration == queueGeneration) StopBookingQueue("알림 처리 오류로 다음 예약을 시작하지 않았습니다.");
+                }
                 return;
             }
             if (state != "ready" || action == null)
@@ -328,6 +346,7 @@ internal sealed partial class MainWindow
             if (kind == "reserve")
             {
                 var attempt = mouseStore.Begin(mouseTarget); mouseAttemptId = attempt.Id;
+                BindQueuedAttempt(attempt);
                 mouseStore.MarkSubmitted(mouseAttemptId); mouseSubmitted = true; mousePhase = "submitted"; mousePhaseStarted = DateTime.UtcNow;
                 status.Text = "선택한 열차의 예매 버튼을 한 번 누릅니다. 결과 확인 중 재시도하지 않습니다.";
             }
@@ -352,6 +371,7 @@ internal sealed partial class MainWindow
     void MouseScriptDialog(object sender, CoreWebView2ScriptDialogOpeningEventArgs e)
     {
         if (OfficialTicketSource(e.Uri)) ObserveSiteBlock(e.Message);
+        if (queueRunning && queueStage == "query") StopBookingQueue("조회 중 안내창이 열렸습니다. 내용을 직접 확인하세요.");
         // Always preserve a visible dialog for the user, including when the workflow is inactive.
         bool automatic = mouseBookingActive && !mouseSubmitted && mousePhase == "drawer" &&
             e.Kind == CoreWebView2ScriptDialogKind.Alert && e.Uri == view.CoreWebView2.Source && AllowedStopNotice(e.Message);

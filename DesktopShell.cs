@@ -20,18 +20,16 @@ internal sealed partial class MainWindow
         var sidebar = new Panel { Dock = DockStyle.Fill, BackColor = UiTheme.Surface, Margin = Padding.Empty, Padding = new Padding(16, 20, 16, 16) };
         var brand = new Panel { Dock = DockStyle.Top, Height = 100 };
         brand.Controls.Add(new Label { Text = "한 장 도우미", Font = new Font(Font.FontFamily, 16, FontStyle.Bold), ForeColor = UiTheme.Text, AutoSize = true, Location = new Point(0, 4) });
-        brand.Controls.Add(new Label { Text = "KORAIL HELPER  /  0.8.5", Font = new Font(Font.FontFamily, 8), ForeColor = UiTheme.Muted, AutoSize = true, Location = new Point(2, 48) });
+        brand.Controls.Add(new Label { Text = "KORAIL HELPER  /  0.9.0", Font = new Font(Font.FontFamily, 8), ForeColor = UiTheme.Muted, AutoSize = true, Location = new Point(2, 48) });
         var nav = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, Padding = Padding.Empty };
-        AddNavHeading(nav, "예약 준비");
         AddNavButton(nav, "코레일 열기", delegate { Navigate("https://www.korail.com/ticket/main"); });
-        AddNavButton(nav, "열차 설정", async delegate { await EditSettings(false); }).Enabled = !Program.ManualDiagnostic;
-        AddNavButton(nav, "텔레그램 설정", async delegate { await EditSettings(true); }).Enabled = !Program.ManualDiagnostic;
-        AddNavButton(nav, "예약 기록", delegate { ShowBookingHistory(); });
-        AddNavHeading(nav, "도움말");
-        AddNavButton(nav, "사용 안내", delegate { Navigate(LocalBase + "welcome.html"); });
-        AddNavButton(nav, "마우스 연습", delegate { Navigate(LocalBase + "card-demo.html?case=mouse-notice"); });
-        var tools = AddNavButton(nav, "진단 · 기타  ›", delegate { });
+        AddNavButton(nav, "예약 관리", async delegate { await OpenBookingQueue(); }).Enabled = !Program.ManualDiagnostic;
+        AddNavButton(nav, "설정", async delegate { await EditSettings(false); }).Enabled = !Program.ManualDiagnostic;
+        var tools = AddNavButton(nav, "도움말  ›", delegate { });
         var menu = new ContextMenuStrip { Font = Font, ShowImageMargin = false };
+        menu.Items.Add("사용 안내", null, delegate { Navigate(LocalBase + "welcome.html"); });
+        menu.Items.Add("마우스 연습", null, delegate { Navigate(LocalBase + "card-demo.html?case=mouse-notice"); });
+        menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("화면 진단 저장", null, async delegate { await SaveDiagnostics(); });
         menu.Items.Add("브라우저 진단 저장", null, delegate { SaveBrowserDiagnostics(); });
         menu.Items.Add(new ToolStripSeparator());
@@ -44,10 +42,10 @@ internal sealed partial class MainWindow
         var commands = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 1, RowCount = 2, AutoSize = true, Padding = new Padding(0, 0, 0, 12), Margin = Padding.Empty };
         commands.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         commands.RowStyles.Add(new RowStyle(SizeType.AutoSize)); commands.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        commands.Controls.Add(new Label { Text = "열차를 선택한 뒤 실행하세요", AutoSize = true, Font = new Font(Font.FontFamily, 14, FontStyle.Bold), Margin = new Padding(0, 0, 0, 12) }, 0, 0);
+        commands.Controls.Add(new Label { Text = "후보 중 한 편 예약 · 다음 일정은 예약 관리", AutoSize = true, Font = new Font(Font.FontFamily, 14, FontStyle.Bold), Margin = new Padding(0, 0, 0, 12) }, 0, 0);
         var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true, Margin = Padding.Empty, Padding = Padding.Empty };
-        refreshButton = AddActionButton(actions, "마우스 자동 조회", async delegate { await OpenMouseRefresh(); }, "primary");
-        bookingButton = AddActionButton(actions, "선택 열차 예약 (마우스)", async delegate { await StartMouseBooking(); });
+        refreshButton = AddActionButton(actions, "선택 열차 시작", async delegate { await OpenMouseRefresh(); }, "primary");
+        bookingButton = refreshButton;
         mouseContinueButton = AddActionButton(actions, "계속", async delegate { await ResumeMouseBooking(); });
         mouseContinueButton.Enabled = false;
         AddActionButton(actions, "모두 중지 (F8)", async delegate { await StopHelper("사용자가 모두 중지했습니다."); }, "danger");
@@ -82,7 +80,7 @@ internal sealed partial class MainWindow
         notificationStatus.ForeColor = sleepStatus.ForeColor = UiTheme.Muted;
         notificationStatus.Margin = new Padding(0, 2, 12, 0); sleepStatus.Margin = new Padding(6, 2, 0, 0);
         notificationStatus.AutoEllipsis = sleepStatus.AutoEllipsis = true;
-        notificationStatus.Text = settings.Telegram.Enabled ? "텔레그램 알림 켜짐 · 예약 완료 확인 후 전송" : "텔레그램 알림 꺼짐 · ‘텔레그램 설정’에서 내 봇을 연결하세요.";
+        notificationStatus.Text = settings.Telegram.Enabled ? "텔레그램 알림 켜짐 · 예약 완료 확인 후 전송" : "텔레그램 알림 꺼짐 · ‘설정 → 내 텔레그램 연결’에서 연결하세요.";
         if (settings.LoadWarning != null) notificationStatus.Text = settings.LoadWarning;
         if (Program.ManualDiagnostic) notificationStatus.Text = "수동 진단 모드 · 자동 예약·알림 없음 · 기존 브라우저 세션 유지";
         ShowSleepStatus(false);
@@ -121,7 +119,7 @@ internal sealed partial class MainWindow
     void UpdateShellState()
     {
         bool blocked = siteDiagnostics.SiteBlocked || mouseRefreshSiteBlocked;
-        shellState.Text = Program.ManualDiagnostic ? "수동 진단" : blocked ? "중지됨" : mousePaused ? "일시정지" : mouseBookingActive ? "실행 중" : "대기";
+        shellState.Text = Program.ManualDiagnostic ? "수동 진단" : blocked ? "중지됨" : mousePaused ? "일시정지" : queueRunning ? "예약 순서 실행 중" : mouseBookingActive ? "실행 중" : "대기";
         shellState.BackColor = blocked ? Color.FromArgb(255, 233, 235) : mousePaused ? Color.FromArgb(255, 243, 218) : mouseBookingActive ? Color.FromArgb(228, 242, 235) : Color.FromArgb(234, 239, 248);
         shellState.ForeColor = blocked ? UiTheme.Danger : mousePaused ? Color.FromArgb(139, 89, 13) : mouseBookingActive ? Color.FromArgb(30, 111, 78) : UiTheme.Muted;
     }

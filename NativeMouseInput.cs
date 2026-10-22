@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Drawing;
 using System.Runtime.InteropServices;
@@ -284,6 +285,32 @@ internal static class NativeMouseInput
             throw new InvalidOperationException("Enter 키가 눌려 있어 입력을 중단했습니다.");
         Input[] inputs = { KeyboardEvent(0), KeyboardEvent(KeyUp) };
         Send(owner, null, inputs);
+    }
+
+    // Replace only the station search input whose focus the caller just verified.
+    // Unicode input retains Windows' injected-input flags and our provenance tag.
+    public static void ReplaceStationText(Form owner, string text)
+    {
+        if (String.IsNullOrWhiteSpace(text) || text.Length > 40 || Array.Exists(text.ToCharArray(), Char.IsControl))
+            throw new ArgumentException("역 이름을 확인하세요.");
+        ValidateOwner(owner);
+        var inputs = new List<Input>();
+        inputs.Add(KeyEvent(0x11, 0, 0)); inputs.Add(KeyEvent(0x41, 0, 0));
+        inputs.Add(KeyEvent(0x41, 0, KeyUp)); inputs.Add(KeyEvent(0x11, 0, KeyUp));
+        foreach (char letter in text)
+        {
+            inputs.Add(KeyEvent(0, letter, 0x0004));
+            inputs.Add(KeyEvent(0, letter, 0x0004 | KeyUp));
+        }
+        Send(owner, null, inputs.ToArray());
+    }
+
+    static Input KeyEvent(ushort key, ushort scan, uint flags)
+    {
+        Input input = new Input(); input.Type = InputKeyboard;
+        input.Value.Keyboard.VirtualKey = key; input.Value.Keyboard.ScanCode = scan;
+        input.Value.Keyboard.Flags = flags; input.Value.Keyboard.ExtraInfo = InputMarker;
+        return input;
     }
 
     static bool IsHeld(int key)
