@@ -15,7 +15,7 @@ internal sealed class SiteDiagnostics
 
     static readonly HashSet<string> Actions = new HashSet<string>(StringComparer.Ordinal) {
         "start", "browser-start", "manual-mode", "helper-mode", "mode-manual", "mode-helper",
-        "native-query", "native-seat", "native-notice", "native-reserve", "native-receipt-notice", "native-receipt-scroll", "completion-check", "helper-initialized", "diagnostic-export"
+        "native-query", "native-more", "native-seat", "native-notice", "native-reserve", "native-receipt-notice", "native-receipt-scroll", "completion-check", "helper-initialized", "diagnostic-export"
     };
     static readonly HashSet<string> NavigationStatuses = new HashSet<string>(StringComparer.Ordinal) {
         "Unknown", "CertificateCommonNameIsIncorrect", "CertificateExpired",

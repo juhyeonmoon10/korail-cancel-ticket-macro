@@ -104,7 +104,7 @@
       action: { kind: 'refresh', id: refresh.selector + '|' + refresh.label, selector: refresh.selector, label: refresh.label,
         x, y, width: rect.width, height: rect.height, viewportWidth, viewportHeight, inViewport } };
   }
-  function observe(expected, suppliedDocument) {
+  function observe(expected, suppliedDocument, inspectOnly) {
     const doc = suppliedDocument || root.document, S = root.KorailSiteAdapter, C = root.KorailHelperCore;
     if (!doc || !doc.body || !S || !C) return { state: 'unknown', message: '조회 화면 분석기가 준비되지 않았습니다.' };
     if (doc.hidden) return blocked('프로그램 화면이 숨겨져 중지합니다.');
@@ -135,11 +135,16 @@
     if (refresh.element.closest('[inert],.disabled')) return { ...data, ...blocked('조회 버튼이 비활성 상태입니다.'), busy: false };
     if (Array.from(doc.querySelectorAll(S.cardSelector + ' > .tck_inner > .price_box.active,#container > .ticket_reserv_wrap')).some(shown))
       return { ...data, ...blocked('선택 좌석 또는 예매창이 열려 재조회를 중지합니다.'), busy: false };
+    if (inspectOnly) return { ...data, state: 'ready', message: '현재 조회 조건과 열차 목록을 확인했습니다.', busy: false };
     return { ...data, ...coordinates(refresh.element, refresh, doc), busy: false };
   }
   function read(expected, suppliedDocument) {
     try { return observe(expected, suppliedDocument); }
     catch { return { state: 'unknown', message: '화면 구조가 바뀌어 조회 상태를 확인하지 못했습니다.' }; }
   }
-  return Object.freeze({ read, sameQuery, queryFingerprint, fingerprint, relevantMutation });
+  function inspect(expected, suppliedDocument) {
+    try { return observe(expected, suppliedDocument, true); }
+    catch { return { state: 'unknown', message: '화면 구조가 바뀌어 조회 상태를 확인하지 못했습니다.' }; }
+  }
+  return Object.freeze({ read, inspect, sameQuery, queryFingerprint, fingerprint, relevantMutation });
 });

@@ -185,6 +185,7 @@ internal sealed partial class MainWindow
         mouseBookingActive = false; mouseGeneration++;
         mousePaused = false; mousePauseSource = null; ShowMouseContinue();
         ResetMouseRefresh();
+        ResetMouseMore();
         try { NativeMouseInput.EndInputWatch(); }
         catch { reason = "입력 감시를 정리하지 못해 기능을 중지했습니다. 프로그램을 다시 실행하세요."; }
         if (mouseBookingTimer != null) mouseBookingTimer.Stop();
@@ -208,11 +209,13 @@ internal sealed partial class MainWindow
             if (WindowState == FormWindowState.Minimized || !NativeMouseInput.IsForeground(this)) { InterruptMouseBooking("창 전환 또는 최소화"); return; }
             if (NativeMouseInput.ForeignInputVersion() != mouseLastInput) { InterruptMouseBooking("클릭·스크롤 또는 키 입력 감지"); return; }
             if ((DateTime.UtcNow - mouseStarted).TotalMinutes > 10) throw new InvalidOperationException("10분 확인을 마쳤습니다. 필요한 조건으로 다시 조회하세요.");
+            if (mouseReadAll || mouseMorePending) { await TickMouseMore(run); return; }
             if (mouseRefreshOnly || mouseRefreshPending)
             {
                 await TickMouseRefresh(run);
                 return;
             }
+            if (mousePhase == "select" && await TickMouseMore(run)) return;
             if (mousePhase != "select" && (DateTime.UtcNow - mousePhaseStarted).TotalSeconds > 30)
                 throw new InvalidOperationException(mouseSubmitted ? "예약 결과를 확인하지 못했습니다. 예매를 다시 누르지 말고 공식 예약내역을 확인하세요." : "30초 안에 다음 예약 단계를 확인하지 못했습니다.");
             var plan = await ReadMousePlan();
@@ -300,7 +303,8 @@ internal sealed partial class MainWindow
                 }
                 if (NativeMouseInput.ForeignInputVersion() != mouseLastInput) { InterruptMouseBooking("스크롤 전 직접 입력 감지"); return; }
                 if (WindowState == FormWindowState.Minimized || !NativeMouseInput.IsForeground(this)) { InterruptMouseBooking("스크롤 전 창 전환"); return; }
-                if (++mouseScrollCount > 8) throw new InvalidOperationException("버튼을 화면에 표시하지 못했습니다.");
+                // Expanded result lists can be much taller than the first page.
+                if (++mouseScrollCount > (mousePhase == "select" ? 100 : 8)) throw new InvalidOperationException("버튼을 화면에 표시하지 못했습니다.");
                 Point center = view.PointToScreen(new Point(view.ClientSize.Width / 2, view.ClientSize.Height / 2));
                 if (kind == "receipt-notice") siteDiagnostics.AddAction("native-receipt-scroll");
                 NativeMouseInput.Wheel(this, center, y < inputMargin ? 360 : -360);

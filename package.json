@@ -1,10 +1,10 @@
 {
   "name": "korail-one-helper",
-  "version": "0.8.2",
+  "version": "0.8.3",
   "license": "MIT",
   "private": true,
   "scripts": {
-    "test": "node --test tests/core.test.cjs tests/selection.test.cjs tests/blocker.test.cjs tests/refresh.test.cjs mouse-booking.test.cjs mouse-refresh.test.cjs site-block.test.cjs"
+    "test": "node --test tests/core.test.cjs tests/selection.test.cjs tests/blocker.test.cjs tests/refresh.test.cjs mouse-booking.test.cjs mouse-refresh.test.cjs mouse-more.test.cjs site-block.test.cjs"
   },
   "devDependencies": { "jsdom": "26.1.0" }
 }

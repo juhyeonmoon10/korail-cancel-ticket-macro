@@ -13,7 +13,7 @@ $embedded = @{
  'WebView2Loader.dll' = (Join-Path $pkg 'runtimes\win-x64\native\WebView2Loader.dll')
  'WebView2-LICENSE.txt' = (Join-Path $pkg 'LICENSE.txt')
 }
-$publicAssets = @('core.js','content.js','korail-site.js','site-block.js','mouse-booking.js','mouse-refresh.js','welcome.html','demo.html','demo.js','card-demo.html','card-demo.js')
+$publicAssets = @('core.js','content.js','korail-site.js','site-block.js','mouse-booking.js','mouse-refresh.js','mouse-more.js','welcome.html','demo.html','demo.js','card-demo.html','card-demo.js')
 foreach ($assetName in $publicAssets) {
     $assetPath = Join-Path (Join-Path $buildRoot 'assets') $assetName
     if (-not (Test-Path -LiteralPath $assetPath -PathType Leaf)) { throw ('Missing public asset: ' + $assetName) }
@@ -29,6 +29,8 @@ $argsList += Join-Path $buildRoot 'MouseBookingHost.cs'
 $argsList += Join-Path $buildRoot 'MouseRefreshHost.cs'
 $argsList += Join-Path $buildRoot 'MousePauseHost.cs'
 $argsList += Join-Path $buildRoot 'MousePauseSelfTests.cs'
+$argsList += Join-Path $buildRoot 'MouseMoreHost.cs'
+$argsList += Join-Path $buildRoot 'MouseMoreSelfTests.cs'
 $argsList += Join-Path $buildRoot 'RefreshDelayPolicy.cs'
 $argsList += Join-Path $buildRoot 'NativeMouseInput.cs'
 $argsList += Join-Path $buildRoot 'SleepPrevention.cs'

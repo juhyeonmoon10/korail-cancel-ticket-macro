@@ -10,8 +10,9 @@ const assets = path.join(__dirname, '../assets');
 // Use the public local card fixture and production scripts, with no page script
 // execution, network, native input, or reservation handler.
 function fixture(t, options = {}) {
-  const dom = new JSDOM(fs.readFileSync(path.join(assets, 'card-demo.html'), 'utf8'), {
-    url: options.demo ? 'https://korail-helper.invalid/card-demo.html' : 'https://www.korail.com/ticket/search/list',
+  const html = options.table ? '<!doctype html><html><body><table><thead><tr><th>열차</th><th>출발</th><th>도착</th><th>일반실</th><th>특실</th></tr></thead><tbody><tr><td>KTX 101 </td><td>06:00 </td><td>08:30 </td><td><button>예매</button> </td><td>매진</td></tr></tbody></table></body></html>' : fs.readFileSync(path.join(assets, 'card-demo.html'), 'utf8');
+  const dom = new JSDOM(html, {
+    url: options.table ? 'https://korail-helper.invalid/demo.html' : options.demo ? 'https://korail-helper.invalid/card-demo.html' : 'https://www.korail.com/ticket/search/list',
     runScripts: 'outside-only', pretendToBeVisual: true
   });
   t.after(() => dom.window.close());
@@ -28,13 +29,16 @@ function fixture(t, options = {}) {
     }
   } };
   w.desktopNonce = 'selection-test'; w.desktopJourney = options.journey || null;
+  if ('nativeMore' in options) w.desktopNativeMore = options.nativeMore;
   w.eval(fs.readFileSync(path.join(assets, 'core.js'), 'utf8'));
   w.eval(fs.readFileSync(path.join(assets, 'korail-site.js'), 'utf8'));
   const S = w.KorailSiteAdapter;
   const first = S.cards(doc).find(row => S.identity(row).train === 'KTX 505');
-  const extra = first.cloneNode(true);
-  extra.querySelector('.num').textContent = '561'; extra.querySelector('h3 span:last-child').textContent = '(10:05 ~ 12:39)';
-  first.parentElement.append(extra);
+  if (first) {
+    const extra = first.cloneNode(true);
+    extra.querySelector('.num').textContent = '561'; extra.querySelector('h3 span:last-child').textContent = '(10:05 ~ 12:39)';
+    first.parentElement.append(extra);
+  }
   w.eval(fs.readFileSync(path.join(assets, 'content.js'), 'utf8'));
   const shadow = doc.getElementById('korail-one-helper').shadowRoot, $ = id => shadow.getElementById(id);
   const event = (node, name) => node.dispatchEvent(new w.Event(name, { bubbles: true, composed: true }));
@@ -46,8 +50,75 @@ function fixture(t, options = {}) {
     assert.ok(candidate >= 0, 'single candidate exists');
     $('trainChoice').value = String(candidate); event($('trainChoice'), 'change'); $('applyTrain').click();
   };
-  return { dom, w, doc, S, $, sent, event, read, csv, single };
+  const receive = message => handlers.forEach(handler => handler({ data: message }));
+  return { dom, w, doc, S, $, sent, event, read, csv, single, receive };
 }
+
+test('native card scan posts one request, preserves selection and waits for the host to mount and scan more rows', t => {
+  const f = fixture(t, { nativeMore: true });
+  const extra = f.S.cards(f.doc).find(row => f.S.identity(row).train === 'KTX 561'); extra.remove();
+  f.csv('505'); f.$('confirmed').checked = true;
+  const before = f.read(), parent = f.S.cards(f.doc)[0].parentElement;
+  let siteInputs = 0;
+  for (const node of f.doc.querySelectorAll('button,a,input')) for (const name of ['click', 'input', 'change']) node.addEventListener(name, () => siteInputs++);
+  f.w.scrollTo = f.w.HTMLElement.prototype.scrollIntoView = () => { siteInputs++; };
+  f.$('scanTrains').click(); f.$('scanTrains').onclick();
+  assert.deepEqual(JSON.parse(JSON.stringify(f.sent.filter(message => message.kind === 'readAllTrains'))), [{ kind: 'readAllTrains', nonce: 'selection-test' }]);
+  assert.equal(f.$('scanTrains').disabled, true);
+  assert.deepEqual(f.read().targets, before.targets); assert.equal(f.read().confirmed, true);
+  assert.deepEqual(f.read().candidates, before.candidates); assert.equal(siteInputs, 0);
+  parent.append(extra);
+  assert.equal(f.read().candidates.some(item => item.train === 'KTX 561'), false, 'new rows are not read by the request itself');
+  assert.equal(f.w.KorailDesktopHelper.scanTrains(), true);
+  assert.equal(f.read().candidates.some(item => item.train === 'KTX 561'), true);
+  assert.deepEqual(f.read().targets, []); assert.equal(f.read().confirmed, false);
+  assert.equal(siteInputs, 0); assert.equal(f.$('scanTrains').disabled, false);
+});
+
+test('native read completion requires the bridge nonce and restores the panel and controls after rejection', t => {
+  const f = fixture(t, { nativeMore: true }); f.$('scanTrains').click(); f.$('fold').click();
+  const main = f.$('fold').getRootNode().querySelector('main');
+  assert.equal(main.hidden, true); assert.equal(f.$('fold').textContent, '+');
+  f.receive({ kind: 'trainReadFinished', nonce: 'wrong' }); assert.equal(main.hidden, true); assert.equal(f.$('scanTrains').disabled, true);
+  f.receive({ kind: 'trainReadFinished', nonce: 'selection-test' });
+  assert.equal(main.hidden, false); assert.equal(f.$('fold').textContent, '−'); assert.equal(f.$('fold').getAttribute('aria-label'), '접기');
+  assert.equal(f.$('scanTrains').disabled, false); assert.deepEqual(f.read().candidates, []);
+  f.$('scanTrains').click(); assert.equal(f.sent.filter(message => message.kind === 'readAllTrains').length, 2);
+  assert.equal(f.w.KorailDesktopHelper.showTrainPanel(), true); assert.equal(f.$('scanTrains').disabled, false);
+});
+
+test('failed native bridge request does not leave the list button disabled', t => {
+  const f = fixture(t, { nativeMore: true });
+  f.w.chrome.webview.postMessage = message => { if (message.kind === 'readAllTrains') throw new Error('bridge unavailable'); };
+  f.$('scanTrains').click(); assert.equal(f.$('scanTrains').disabled, false); assert.match(f.read().status, /요청을 전달하지 못/);
+});
+
+test('list expansion and host rescan cannot replace a selection while the legacy loop is starting', t => {
+  const f = fixture(t, { nativeMore: true, demo: true }); f.csv('505'); f.$('confirmed').checked = true;
+  f.w.chrome.webview.postMessage = message => { f.sent.push(message); };
+  f.$('start').click(); assert.equal(f.read().starting, true);
+  const selected = f.read().targets;
+  assert.equal(f.$('scanTrains').onclick(), false); assert.equal(f.w.KorailDesktopHelper.scanTrains(), false);
+  f.receive({ kind: 'trainReadFinished', nonce: 'selection-test' });
+  assert.equal(f.$('scanTrains').disabled, true); assert.deepEqual(f.read().targets, selected);
+  assert.equal(f.sent.some(message => message.kind === 'readAllTrains'), false);
+  f.w.KorailDesktopHelper.stop('test cleanup');
+});
+
+test('native CSV apply remains synchronous and explains that missing trains need the list expansion', t => {
+  const f = fixture(t, { nativeMore: true }); f.csv('505,561');
+  assert.deepEqual(f.read().targets.map(item => item.train), ['KTX 505', 'KTX 561']);
+  f.csv('505,99999'); assert.deepEqual(f.read().targets, []); assert.match(f.read().status, /열차 목록 읽기.*더보기/);
+  assert.equal(f.sent.some(message => message.kind === 'readAllTrains'), false);
+});
+
+test('disabled native flag and table pages retain the synchronous local scan', t => {
+  for (const options of [{ nativeMore: false }, { nativeMore: true, table: true }]) {
+    const f = fixture(t, options); f.$('scanTrains').click();
+    assert.ok(f.read().candidates.length > 0); assert.equal(f.$('scanTrains').disabled, false);
+    assert.equal(f.sent.some(message => message.kind === 'readAllTrains'), false);
+  }
+});
 
 test('blank CSV preserves dropdown selection and the single-target snapshot contract', t => {
   const f = fixture(t);

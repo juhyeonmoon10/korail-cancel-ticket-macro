@@ -32,6 +32,7 @@ internal sealed partial class MainWindow
 
     void CheckMousePauseDeadline()
     {
+        CheckMouseMoreDeadline();
         if ((DateTime.UtcNow - mouseStarted).TotalMinutes > 10)
             throw new InvalidOperationException("10분 실행 기한이 지났습니다. 조건을 확인하고 다시 시작하세요.");
         if (mouseRefreshPending && (DateTime.UtcNow - mouseRefreshSent).TotalSeconds > 30)
@@ -45,8 +46,25 @@ internal sealed partial class MainWindow
         if (view.CoreWebView2.Source != mousePauseSource || !MouseAllowedSource(mousePauseSource))
             throw new InvalidOperationException("페이지가 바뀌었습니다. 새 조회 결과에서 다시 시작하세요.");
         CheckMousePauseDeadline();
+        bool expandingMissing = false;
+        if (mouseReadAll || mouseMorePending || (!mouseRefreshOnly && !mouseRefreshPending))
+        {
+            var more = await ReadMouseMore();
+            if (run != mouseGeneration || closing || !mousePaused) return;
+            if (more != null && !String.IsNullOrEmpty(Get(more, "blockCode"))) ObserveSiteBlock(Get(more, "blockCode"));
+            if (run != mouseGeneration || closing || !mousePaused) return;
+            CheckMorePlan(more);
+            if (run != mouseGeneration || closing || !mousePaused) return;
+            if (Get(more, "state") != "ready" && !(mouseMorePending && Get(more, "state") == "loading"))
+                throw new InvalidOperationException("더보기 목록 상태를 확인하지 못해 재개하지 않았습니다.");
+            if (mouseMorePending && Get(more, "state") == "ready") MoreAppended(mouseMoreBaseline, MoreKeys(more));
+            if (mouseReadAll) { CheckMousePauseDeadline(); return; }
+            expandingMissing = mouseMorePending || !MoreFlag(more, "allTargetsPresent");
+            if (expandingMissing && !mouseMorePending && !MoreFlag(more, "more"))
+                throw new InvalidOperationException("선택한 열차 일부와 더보기 버튼이 없어 재개하지 않았습니다.");
+        }
         System.Collections.Generic.Dictionary<string, object> seatPlan = null;
-        if (!mouseAutoRefresh)
+        if (!mouseAutoRefresh && !expandingMissing)
         {
             seatPlan = await ReadMousePlan();
             if (run != mouseGeneration || closing || !mousePaused) return;
@@ -58,7 +76,7 @@ internal sealed partial class MainWindow
             var refresh = await ReadMouseRefresh(mouseRefreshQuery);
             if (run != mouseGeneration || closing || !mousePaused) return;
             CheckRefreshPlan(refresh);
-            if (Get(refresh, "state") != "ready" && !(mouseRefreshPending && Get(refresh, "state") == "loading"))
+            if (Get(refresh, "state") != "ready" && !((mouseRefreshPending || mouseMorePending) && Get(refresh, "state") == "loading"))
                 throw new InvalidOperationException("조회 화면 상태를 확인하지 못해 재개하지 않았습니다.");
         }
         // A manual seat selection must never be discarded by a resumed query.
@@ -81,7 +99,7 @@ internal sealed partial class MainWindow
                 throw new InvalidOperationException("예약 시도 기록이 발견되었습니다. 예약 결과를 확인하세요.");
             // An outstanding query keeps its original count and 30-second deadline.
             // Its existing pending path must finish before any new input is possible.
-            if (!mouseRefreshPending)
+            if (!mouseRefreshPending && !expandingMissing)
             {
                 var plan = seatPlan ?? await ReadMousePlan();
                 if (run != mouseGeneration || closing || !mousePaused) return;
@@ -118,7 +136,7 @@ internal sealed partial class MainWindow
             sleepPrevention.Start(); ShowSleepStatus(false);
             mouseLastInput = input;
             mousePaused = false; mousePauseSource = null; mouseGeneration++;
-            status.Text = "기존 조건으로 계속합니다 · 조회 " + mouseRefreshCount + "/" + mouseRefreshLimit + "회 · F8 중지";
+            status.Text = mouseReadAll ? "더보기 포함 목록 읽기를 계속합니다 · F8 중지" : "기존 조건으로 계속합니다 · 조회 " + mouseRefreshCount + "/" + mouseRefreshLimit + "회 · F8 중지";
         }
         catch (Exception ex) { if (run == mouseGeneration) StopMouseBooking("재개하지 못했습니다. " + ex.Message); }
         finally { mouseResuming = false; ShowMouseContinue(); }

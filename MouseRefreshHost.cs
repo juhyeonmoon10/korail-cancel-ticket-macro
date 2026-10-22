@@ -154,6 +154,7 @@ internal sealed partial class MainWindow
             if (mouseRefreshStableKey != key) { mouseRefreshStableKey = key; mouseRefreshStableSince = now; return; }
             if ((now - mouseRefreshStableSince).TotalMilliseconds < 750) return;
             mouseRefreshPending = false; mouseScrollCount = 0;
+            mouseMoreCount = mouseMoreScrollCount = 0; mouseMoreStableKey = null; mouseMoreBaseline = null;
             if (mouseRefreshCount < mouseRefreshLimit) ScheduleNextMouseRefresh(now);
             RefreshLog("result", "count=" + mouseRefreshCount + ", rows=" + Get(plan, "count"));
             status.Text = "마우스 재조회 " + mouseRefreshCount + "/" + mouseRefreshLimit + "회 결과 갱신 확인";
@@ -178,7 +179,7 @@ internal sealed partial class MainWindow
         {
             if (NativeMouseInput.ForeignInputVersion() != mouseLastInput) { InterruptMouseBooking("스크롤 전 직접 입력 감지"); return; }
             if (WindowState == FormWindowState.Minimized || !NativeMouseInput.IsForeground(this)) { InterruptMouseBooking("스크롤 전 창 전환"); return; }
-            if (++mouseScrollCount > 8) throw new InvalidOperationException("조회 버튼을 화면에 표시하지 못했습니다.");
+            if (++mouseScrollCount > 100) throw new InvalidOperationException("조회 버튼을 화면에 표시하지 못했습니다.");
             NativeMouseInput.Wheel(this, view.PointToScreen(new Point(view.ClientSize.Width / 2, view.ClientSize.Height / 2)), y < inputMargin ? 360 : -360);
             return;
         }

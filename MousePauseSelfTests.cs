@@ -73,14 +73,14 @@ internal sealed partial class MainWindow
             await ExpectMouseResumeRejected("페이지가 바뀌", "resume validation: a different original URL is rejected before reading the page");
             mousePauseSource = originalSource;
             await view.CoreWebView2.ExecuteScriptAsync("__cardDemo.row('505').querySelector('.price_box.gen').classList.add('active');");
-            await ExpectMouseResumeRejected("직접 선택한 좌석", "resume validation: a manually active seat is never discarded by resumed automation");
+            await ExpectMouseResumeRejected("선택 좌석", "resume validation: a manually active seat is never discarded by resumed automation");
             await view.CoreWebView2.ExecuteScriptAsync("__cardDemo.row('505').querySelector('.price_box.gen').classList.remove('active');");
             await view.CoreWebView2.ExecuteScriptAsync(@"(() => {
               const drawer=document.createElement('div');drawer.className='ticket_reserv_wrap';
               drawer.style.cssText='display:block;min-height:40px';drawer.textContent='로컬 검사 예매 영역';
               document.getElementById('container').append(drawer);
             })();");
-            await ExpectMouseResumeRejected("직접 선택한 좌석", "resume validation: a visible reservation drawer is rejected even without an active seat");
+            await ExpectMouseResumeRejected("선택 좌석", "resume validation: a visible reservation drawer is rejected even without an active seat");
             await view.CoreWebView2.ExecuteScriptAsync("document.querySelector('#container > .ticket_reserv_wrap').remove();");
             await ValidateMouseResume(mouseGeneration);
             Assert(mousePaused && mouseBookingActive, "resume validation: removing local mock conflicts restores read-only validation");

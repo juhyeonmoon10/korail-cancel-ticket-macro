@@ -18,8 +18,8 @@ using Microsoft.Win32;
 
 [assembly: AssemblyTitle("코레일 한 장 도우미 PC")]
 [assembly: AssemblyDescription("개인용 열차 예매 보조 도구 - 비공식")]
-[assembly: AssemblyVersion("0.8.2.0")]
-[assembly: AssemblyFileVersion("0.8.2.0")]
+[assembly: AssemblyVersion("0.8.3.0")]
+[assembly: AssemblyFileVersion("0.8.3.0")]
 
 internal static class Program
 {
@@ -46,7 +46,7 @@ internal static class Program
             if (!created) { MessageBox.Show("이미 실행 중입니다. 열린 코레일 도우미 창을 사용하세요.", "코레일 한 장 도우미"); return 2; }
             try
             {
-                BundleRoot = Path.Combine(DataRoot, "app-0.8.2");
+                BundleRoot = Path.Combine(DataRoot, "app-0.8.3");
                 Extract();
                 AppDomain.CurrentDomain.AssemblyResolve += delegate(object sender, ResolveEventArgs eventArgs)
                 {
@@ -129,7 +129,7 @@ internal sealed partial class MainWindow : Form
     TaskCompletionSource<bool> loadWaiter;
     public MainWindow()
     {
-        Text = "코레일 한 장 도우미 PC 0.8.2 · " + (Program.ManualDiagnostic ? "수동 진단 · 자동 기능 꺼짐" : "비공식");
+        Text = "코레일 한 장 도우미 PC 0.8.3 · " + (Program.ManualDiagnostic ? "수동 진단 · 자동 기능 꺼짐" : "비공식");
         settings = AppSettings.Load(Path.Combine(Program.DataRoot, "settings.json"));
         ClientSize = new Size(1320, 900); MinimumSize = new Size(1000, 760);
         StartPosition = FormStartPosition.CenterScreen; Font = new Font("맑은 고딕", 10);
@@ -359,7 +359,7 @@ internal sealed partial class MainWindow : Form
             {
                 activeDocument = !siteDiagnostics.SiteBlocked;
                 RegisterNotificationPage();
-                string script = "(() => { const desktopNonce = " + json.Serialize(nonce) + "; const desktopJourney = " + json.Serialize(settings.Journey) + ";\n" + File.ReadAllText(Path.Combine(Program.BundleRoot, "core.js")) + "\n" + File.ReadAllText(Path.Combine(Program.BundleRoot, "korail-site.js")) + "\n" + File.ReadAllText(Path.Combine(Program.BundleRoot, "site-block.js")) + "\n" + File.ReadAllText(Path.Combine(Program.BundleRoot, "content.js")) + "\n})();";
+                string script = "(() => { const desktopNativeMore = " + (Program.SelfTest ? "false" : "true") + "; const desktopNonce = " + json.Serialize(nonce) + "; const desktopJourney = " + json.Serialize(settings.Journey) + ";\n" + File.ReadAllText(Path.Combine(Program.BundleRoot, "core.js")) + "\n" + File.ReadAllText(Path.Combine(Program.BundleRoot, "korail-site.js")) + "\n" + File.ReadAllText(Path.Combine(Program.BundleRoot, "site-block.js")) + "\n" + File.ReadAllText(Path.Combine(Program.BundleRoot, "content.js")) + "\n})();";
                 string result = await view.CoreWebView2.ExecuteScriptAsync(script);
                 if (page != navigation) return;
                 bool injected = await EvalBool("!!window.KorailDesktopHelper");
@@ -376,7 +376,7 @@ internal sealed partial class MainWindow : Form
             if (loadWaiter != null) loadWaiter.TrySetException(ex);
         }
     }
-    void MessageReceived(object sender, CoreWebView2WebMessageReceivedEventArgs e)
+    async void MessageReceived(object sender, CoreWebView2WebMessageReceivedEventArgs e)
     {
         if (closing || Program.ManualDiagnostic || !HelperPage(e.Source)) return;
         try
@@ -398,6 +398,12 @@ internal sealed partial class MainWindow : Form
             if (kind == "siteBlocked")
             {
                 if (OfficialTicketSource(e.Source)) ObserveSiteBlock(Get(data, "code"));
+                return;
+            }
+            if (kind == "readAllTrains")
+            {
+                if (activeDocument && !Program.SelfTest) await StartMouseReadAll();
+                else FinishTrainReadRequest();
                 return;
             }
             if (kind == "lease")
@@ -757,6 +763,7 @@ internal sealed partial class MainWindow : Form
             Assert(view.CoreWebView2.Source.Contains("welcome.html") && !activeDocument, "navigation clears active document");
             await LoadDemo("unchanged"); await StartDemo(true); await Task.Delay(300); await WaitStopped(35000);
             Assert((await EvalString("document.getElementById('result').textContent")).Contains("0회") && (await EvalString("document.getElementById('korail-one-helper').shadowRoot.getElementById('status').textContent")).Contains("갱신"), "unconfirmed refresh: timeout without click");
+            await RunMouseMoreTests();
             await RunMousePauseTests();
             FinishTests(null);
         }

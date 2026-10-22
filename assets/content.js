@@ -3,6 +3,7 @@
   if (document.getElementById('korail-one-helper')) return;
   const isDemo = location.hostname === 'korail-helper.invalid';
   const bridgeNonce = desktopNonce;
+  const nativeMore = typeof desktopNativeMore !== 'undefined' && desktopNativeMore === true;
   if (!isDemo && globalThis.KorailSiteBlock) {
     globalThis.KorailSiteBlock.install(document, code => {
       chrome.webview.postMessage({ kind: 'siteBlocked', code, nonce: bridgeNonce });
@@ -13,6 +14,10 @@
   let rpcSequence = 0;
   chrome.webview.addEventListener('message', event => {
     const message = event.data;
+    if (message && message.kind === 'trainReadFinished' && message.nonce === bridgeNonce) {
+      showTrainPanel();
+      return;
+    }
     if (message && message.kind === 'notificationStatus' && message.nonce === bridgeNonce && typeof message.text === 'string') {
       $('notification').textContent = message.text.slice(0, 500);
       log(message.text.slice(0, 500));
@@ -65,6 +70,7 @@
   let searchConfig, targetConfig, picking = null, highlighted = null, oldOutline = '';
   let trainCandidates = [], targetConfigs = [], ambiguousTrainNumbers = new Set(), selectionContext = null, manualPrepared = null, reservationClicks = 0;
   let running = false, starting = false, generation = 0, timer, watchdog, observer;
+  let trainReadRequested = false;
   let session, count = 0, audio, pendingRefresh = null;
   let token = crypto.randomUUID();
   const originalTitle = document.title;
@@ -233,6 +239,8 @@
     preview();
   }
   function scanTrains() {
+    if (running || starting) return false;
+    trainReadRequested = false; setControls();
     try {
       clearSelection(); preview(); trainCandidates = []; ambiguousTrainNumbers = new Set();
       const invalid = journeyError(); if (invalid) throw new Error(invalid);
@@ -270,7 +278,20 @@
       return true;
     } catch (error) { trainCandidates = []; $('trainChoice').replaceChildren(new Option('목록을 다시 읽어주세요.', '')); status(error.message); return false; }
   }
+  function requestTrainScan() {
+    if (running || starting || trainReadRequested) return false;
+    if (!nativeMore || !cardPage()) return scanTrains();
+    trainReadRequested = true; setControls();
+    status('더보기 아래 열차까지 읽도록 요청했습니다. 프로그램 창을 그대로 두세요.');
+    try { chrome.webview.postMessage({ kind: 'readAllTrains', nonce: bridgeNonce }); return true; }
+    catch { trainReadRequested = false; setControls(); status('열차 목록 읽기 요청을 전달하지 못했습니다. 다시 시도하세요.'); return false; }
+  }
+  function showTrainPanel() {
+    trainReadRequested = false; setControls(); foldPanel(false);
+    return true;
+  }
   function applyTrain() {
+    if (trainReadRequested || running || starting) return;
     clearSelection(); preview();
     try {
       const numbers = C.parseTrainNumbers($('trainNumbers').value);
@@ -279,7 +300,7 @@
         const next = numbers.map(number => {
           const matches = trainCandidates.filter(item => trainNumber(item.identity) === number);
           if (ambiguousTrainNumbers.has(number) || matches.length > 1) throw new Error(`열차번호 ${number}의 후보가 여러 개입니다. 같은 번호의 종류와 시각을 확인하세요.`);
-          if (matches.length !== 1) throw new Error(`열차번호 ${number}을 현재 조회 결과에서 찾지 못했습니다. 모든 번호가 표시되도록 조회하세요.`);
+          if (matches.length !== 1) throw new Error(`열차번호 ${number}을 현재 조회 결과에서 찾지 못했습니다. ${nativeMore && cardPage() ? '‘열차 목록 읽기’로 더보기 아래 열차까지 읽은 뒤 다시 적용하세요.' : '모든 번호가 표시되도록 조회하세요.'}`);
           return matches[0];
         });
         $('trainNumbers').value = numbers.join(',');
@@ -364,6 +385,7 @@
   }
   function setControls() {
     for (const id of ['pickSearch', 'pickSeat', 'grade', 'scanTrains', 'trainChoice', 'trainNumbers', 'applyTrain', 'interval', 'limit', 'auto', 'confirmed', 'start']) $(id).disabled = running || starting;
+    if (trainReadRequested) for (const id of ['pickSearch', 'pickSeat', 'grade', 'scanTrains', 'trainChoice', 'trainNumbers', 'applyTrain', 'confirmed', 'start']) $(id).disabled = true;
     $('stop').disabled = !(running || starting);
   }
   function clearHighlight() { if (highlighted) highlighted.style.outline = oldOutline; highlighted = null; }
@@ -637,8 +659,11 @@
   });
   window.KorailDesktopHelper = Object.freeze({
     stop: reason => stop(typeof reason === 'string' ? reason : '프로그램에서 중지했습니다.'),
+    scanTrains,
+    showTrainPanel,
     reset: reason => {
       stop(typeof reason === 'string' ? reason : '화면이 바뀌었습니다. 조회 버튼과 열차를 다시 선택하세요.');
+      trainReadRequested = false; setControls();
       searchConfig = null; clearSelection(); trainCandidates = []; ambiguousTrainNumbers = new Set();
       $('trainChoice').replaceChildren(new Option('화면이 바뀌었습니다. 열차 목록을 다시 읽어주세요.', ''));
       preview();
@@ -669,7 +694,7 @@
     }
   });
   $('pickSearch').onclick = () => beginPick('search'); $('pickSeat').onclick = () => beginPick('seat');
-  $('scanTrains').onclick = scanTrains; $('applyTrain').onclick = applyTrain;
+  $('scanTrains').onclick = requestTrainScan; $('applyTrain').onclick = applyTrain;
   $('trainChoice').onchange = () => { clearSelection(); preview(); };
   $('trainNumbers').oninput = $('trainNumbers').onchange = () => { clearSelection(); preview(); };
   $('grade').onchange = () => { trainCandidates = []; clearSelection(); $('trainChoice').replaceChildren(new Option('등급을 바꿨습니다. 목록을 다시 읽어주세요.', '')); preview(); };
