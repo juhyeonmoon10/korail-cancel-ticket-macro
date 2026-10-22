@@ -12,17 +12,17 @@ internal sealed class RefreshDelayPolicy
 
     public RefreshDelayPolicy(int intervalSeconds, int jitterPercent)
     {
-        if (intervalSeconds < 30 || intervalSeconds > 300)
-            throw new ArgumentOutOfRangeException("intervalSeconds", "조회 간격은 30~300초로 지정하세요.");
+        if (intervalSeconds < 1)
+            throw new ArgumentOutOfRangeException("intervalSeconds", "조회 간격은 1~2147483647초의 정수로 지정하세요.");
         if (jitterPercent < 0 || jitterPercent > 100)
             throw new ArgumentOutOfRangeException("jitterPercent", "간격 변동 폭은 0~100%로 지정하세요.");
-        double fraction = jitterPercent / 100.0;
-        minimumSeconds = Math.Max(30.0, intervalSeconds * (1.0 - fraction));
-        maximumSeconds = Math.Min(300.0, intervalSeconds * (1.0 + fraction));
-        // Integer seconds and percent produce hundredth-second endpoints.
-        // Round once to represent those endpoints exactly at TimeSpan precision.
-        minimumTicks = (long)Math.Round(minimumSeconds * TimeSpan.TicksPerSecond, MidpointRounding.AwayFromZero);
-        maximumTicks = (long)Math.Round(maximumSeconds * TimeSpan.TicksPerSecond, MidpointRounding.AwayFromZero);
+        // Whole seconds and percentages have exact tick endpoints. Even the
+        // largest Int32 interval at 100% stays within Int64 arithmetic.
+        long baseTicks = (long)intervalSeconds * TimeSpan.TicksPerSecond;
+        minimumTicks = Math.Max(TimeSpan.TicksPerSecond, baseTicks * (100 - jitterPercent) / 100);
+        maximumTicks = baseTicks * (100 + jitterPercent) / 100;
+        minimumSeconds = (double)minimumTicks / TimeSpan.TicksPerSecond;
+        maximumSeconds = (double)maximumTicks / TimeSpan.TicksPerSecond;
     }
 
     public TimeSpan Sample(double unit)

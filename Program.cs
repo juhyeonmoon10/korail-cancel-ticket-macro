@@ -18,8 +18,8 @@ using Microsoft.Win32;
 
 [assembly: AssemblyTitle("코레일 한 장 도우미 PC")]
 [assembly: AssemblyDescription("개인용 열차 예매 보조 도구 - 비공식")]
-[assembly: AssemblyVersion("0.8.3.0")]
-[assembly: AssemblyFileVersion("0.8.3.0")]
+[assembly: AssemblyVersion("0.8.4.0")]
+[assembly: AssemblyFileVersion("0.8.4.0")]
 
 internal static class Program
 {
@@ -46,7 +46,7 @@ internal static class Program
             if (!created) { MessageBox.Show("이미 실행 중입니다. 열린 코레일 도우미 창을 사용하세요.", "코레일 한 장 도우미"); return 2; }
             try
             {
-                BundleRoot = Path.Combine(DataRoot, "app-0.8.3");
+                BundleRoot = Path.Combine(DataRoot, "app-0.8.4");
                 Extract();
                 AppDomain.CurrentDomain.AssemblyResolve += delegate(object sender, ResolveEventArgs eventArgs)
                 {
@@ -129,7 +129,7 @@ internal sealed partial class MainWindow : Form
     TaskCompletionSource<bool> loadWaiter;
     public MainWindow()
     {
-        Text = "코레일 한 장 도우미 PC 0.8.3 · " + (Program.ManualDiagnostic ? "수동 진단 · 자동 기능 꺼짐" : "비공식");
+        Text = "코레일 한 장 도우미 PC 0.8.4 · " + (Program.ManualDiagnostic ? "수동 진단 · 자동 기능 꺼짐" : "비공식");
         settings = AppSettings.Load(Path.Combine(Program.DataRoot, "settings.json"));
         ClientSize = new Size(1320, 900); MinimumSize = new Size(1000, 760);
         StartPosition = FormStartPosition.CenterScreen; Font = new Font("맑은 고딕", 10);
@@ -626,22 +626,34 @@ internal sealed partial class MainWindow : Form
                     try
                     {
                         dialog.Opacity = 0;
-                        var interval = dialog.Controls.OfType<NumericUpDown>().Single(control => control.AccessibleName == "조회 간격");
-                        var jitter = dialog.Controls.OfType<NumericUpDown>().Single(control => control.AccessibleName == "랜덤 지연 비율");
+                        var interval = dialog.Controls.OfType<TextBox>().Single(control => control.AccessibleName == "조회 간격");
+                        var count = dialog.Controls.OfType<TextBox>().Single(control => control.AccessibleName == "추가 조회 횟수");
+                        var jitter = dialog.Controls.OfType<TextBox>().Single(control => control.AccessibleName == "랜덤 지연 비율");
                         var range = dialog.Controls.OfType<Label>().Single(control => control.AccessibleName == "실제 대기 범위");
-                        interval.Value = 60; jitter.Value = 20;
+                        var error = dialog.Controls.OfType<Label>().Single(control => control.AccessibleName == "입력 오류");
+                        var start = dialog.Controls.OfType<Button>().Single(control => control.AccessibleName == "자동 조회 시작");
+                        interval.Text = "60"; jitter.Text = "20";
                         Assert(range.Text == "실제 대기: 48~72초", "refresh dialog: interval and percent update the displayed range");
-                        interval.Value = 30;
-                        Assert(range.Text == "실제 대기: 30~36초", "refresh dialog: minimum interval remains thirty seconds");
-                        interval.Value = 300;
-                        Assert(range.Text == "실제 대기: 240~300초", "refresh dialog: maximum interval remains three hundred seconds");
-                        interval.Value = 60;
+                        interval.Text = "5"; count.Text = "9999999"; jitter.Text = "0";
+                        count.Focus(); dialog.Validate();
+                        Assert(interval.Text == "5" && count.Text == "9999999" && start.Enabled && range.Text == "실제 대기: 5~5초", "refresh dialog: typed five seconds and 9999999 queries survive validation without clamping");
+                        jitter.Text = "20";
+                        Assert(range.Text == "실제 대기: 4~6초", "refresh dialog: five-second jitter uses the requested base");
+                        interval.Text = "300";
+                        Assert(range.Text == "실제 대기: 240~360초", "refresh dialog: jitter is no longer clipped at three hundred seconds");
+                        interval.Text = "0";
+                        Assert(!start.Enabled && interval.Text == "0" && !String.IsNullOrEmpty(error.Text), "refresh dialog: invalid interval stays visible and prevents start");
+                        interval.Text = "5"; count.Text = "2147483648";
+                        Assert(!start.Enabled && count.Text == "2147483648" && !String.IsNullOrEmpty(error.Text), "refresh dialog: overflowing count is rejected instead of silently capped");
+                        count.Text = "9999999"; jitter.Text = "101";
+                        Assert(!start.Enabled && jitter.Text == "101", "refresh dialog: invalid percentage is not silently capped");
+                        jitter.Text = "0";
                         using (var bitmap = new Bitmap(dialog.Width, dialog.Height))
                         {
                             dialog.PerformLayout(); dialog.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size));
                             bitmap.Save(Path.Combine(Path.GetDirectoryName(Program.TestOutput), "refresh-settings-preview.png"), System.Drawing.Imaging.ImageFormat.Png);
                         }
-                        jitter.Value = 55; inspected = true;
+                        jitter.Text = "55"; inspected = true;
                     }
                     catch (Exception ex) { dialogError = ex; }
                     finally { dialog.DialogResult = DialogResult.Cancel; dialog.Close(); }
@@ -651,6 +663,16 @@ internal sealed partial class MainWindow : Form
             }
             if (dialogError != null) throw dialogError;
             Assert(inspected && mouseRefreshJitterPercent == 20 && !mouseBookingActive, "refresh dialog: cancel neither changes saved options nor starts input");
+            using (var accepted = new RefreshSettingsDialog(new RefreshOptions(60, 10, 0), Font))
+            {
+                accepted.ShowInTaskbar = false; accepted.Opacity = 0; accepted.Show(this);
+                accepted.Controls.OfType<TextBox>().Single(control => control.AccessibleName == "조회 간격").Text = "5";
+                accepted.Controls.OfType<TextBox>().Single(control => control.AccessibleName == "추가 조회 횟수").Text = "999999";
+                accepted.Controls.OfType<Button>().Single(control => control.AccessibleName == "자동 조회 시작").PerformClick();
+                Assert(accepted.DialogResult == DialogResult.OK && accepted.SelectedOptions.IntervalSeconds == 5 && accepted.SelectedOptions.Limit == 999999,
+                    "refresh dialog: accepting typed values returns the exact five-second and 999999-query settings without native input");
+                accepted.Close();
+            }
         }
         finally { mouseRefreshIntervalSeconds = savedInterval; mouseRefreshJitterPercent = savedJitter; mouseRefreshNext = savedNext; }
     }
@@ -764,6 +786,7 @@ internal sealed partial class MainWindow : Form
             await LoadDemo("unchanged"); await StartDemo(true); await Task.Delay(300); await WaitStopped(35000);
             Assert((await EvalString("document.getElementById('result').textContent")).Contains("0회") && (await EvalString("document.getElementById('korail-one-helper').shadowRoot.getElementById('status').textContent")).Contains("갱신"), "unconfirmed refresh: timeout without click");
             await RunMouseMoreTests();
+            await RunRefreshLimitTests();
             await RunMousePauseTests();
             FinishTests(null);
         }

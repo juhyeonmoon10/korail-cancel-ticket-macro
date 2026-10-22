@@ -31,33 +31,12 @@ internal sealed partial class MainWindow
         int run = mouseGeneration;
         await stopping;
         if (run != mouseGeneration || closing) return;
-        using (var dialog = new Form { Text = "마우스 자동 조회", ClientSize = new Size(600, 410), StartPosition = FormStartPosition.CenterParent,
-            FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false, Font = Font })
+        using (var dialog = new RefreshSettingsDialog(new RefreshOptions(mouseRefreshIntervalSeconds, mouseRefreshLimit, mouseRefreshJitterPercent), Font))
         {
-            var info = new Label { Left = 20, Top = 18, Width = 560, Height = 70,
-                Text = "같은 날짜·구간·분류의 조회 버튼을 마우스로 누릅니다.\n최대 10분 · F8 중지 · 조회 대기 중 직접 입력은 일시정지\n창 전환은 일시정지, 차단 안내에서는 중지합니다." };
-            var intervalLabel = new Label { Left = 20, Top = 105, Width = 130, Text = "조회 간격 (초)" };
-            var interval = new NumericUpDown { Left = 155, Top = 100, Width = 100, Minimum = 30, Maximum = 300, Value = mouseRefreshIntervalSeconds, AccessibleName = "조회 간격" };
-            var countLabel = new Label { Left = 300, Top = 105, Width = 150, Text = "추가 조회 횟수" };
-            var count = new NumericUpDown { Left = 460, Top = 100, Width = 100, Minimum = 1, Maximum = 20, Value = mouseRefreshLimit };
-            var jitterLabel = new Label { Left = 20, Top = 155, Width = 130, Text = "랜덤 지연 (±%)" };
-            var jitter = new NumericUpDown { Left = 155, Top = 150, Width = 100, Minimum = 0, Maximum = 100, Value = mouseRefreshJitterPercent, AccessibleName = "랜덤 지연 비율" };
-            var range = new Label { Left = 275, Top = 155, Width = 305, Height = 28, AccessibleName = "실제 대기 범위" };
-            Action showRange = delegate {
-                var policy = new RefreshDelayPolicy((int)interval.Value, (int)jitter.Value);
-                range.Text = "실제 대기: " + policy.MinimumSeconds.ToString("0.##", CultureInfo.InvariantCulture) + "~" + policy.MaximumSeconds.ToString("0.##", CultureInfo.InvariantCulture) + "초";
-            };
-            interval.ValueChanged += delegate { showRange(); }; jitter.ValueChanged += delegate { showRange(); }; showRange();
-            var delayNote = new Label { Left = 20, Top = 190, Width = 560, Height = 44, Text = "0%는 고정 간격 · 첫 조회와 갱신 후 매번 대기를 정합니다.\n매크로 감지나 이용 제한을 막는다는 보장은 없습니다." };
-            var book = new CheckBox { Left = 20, Top = 240, Width = 560, Height = 32, Text = "미리 선택한 열차의 좌석이 나오면 예매까지 진행 (결제 제외)" };
-            var note = new Label { Left = 20, Top = 278, Width = 560, Height = 45, Text = "체크하지 않으면 조회만 합니다.\n예매하려면 열차·등급·확인란과 텔레그램 설정을 완료하세요." };
-            var start = new Button { Left = 365, Top = 357, Width = 100, Height = 35, Text = "시작", DialogResult = DialogResult.OK };
-            var cancel = new Button { Left = 475, Top = 357, Width = 100, Height = 35, Text = "취소", DialogResult = DialogResult.Cancel };
-            dialog.Controls.AddRange(new Control[] { info, intervalLabel, interval, countLabel, count, jitterLabel, jitter, range, delayNote, book, note, start, cancel });
-            dialog.AcceptButton = start; dialog.CancelButton = cancel;
             if (dialog.ShowDialog(this) != DialogResult.OK) return;
-            mouseRefreshIntervalSeconds = (int)interval.Value; mouseRefreshLimit = (int)count.Value; mouseRefreshJitterPercent = (int)jitter.Value;
-            if (book.Checked) await StartMouseBooking(true);
+            mouseRefreshIntervalSeconds = dialog.SelectedOptions.IntervalSeconds;
+            mouseRefreshLimit = dialog.SelectedOptions.Limit; mouseRefreshJitterPercent = dialog.SelectedOptions.JitterPercent;
+            if (dialog.BookWhenAvailable) await StartMouseBooking(true);
             else await StartMouseRefreshOnly();
         }
     }
@@ -91,8 +70,7 @@ internal sealed partial class MainWindow
     async Task<bool> PrepareMouseRefresh(bool only, int run)
     {
         if (mouseRefreshSiteBlocked) throw new InvalidOperationException("이 실행에서 코레일 자동화 차단이 확인되었습니다. 자동 조회를 다시 시작하지 않습니다.");
-        if (mouseRefreshIntervalSeconds < 30 || mouseRefreshIntervalSeconds > 300 || mouseRefreshJitterPercent < 0 || mouseRefreshJitterPercent > 100 || mouseRefreshLimit < 1 || mouseRefreshLimit > 20)
-            throw new InvalidOperationException("조회 간격과 횟수가 허용 범위를 벗어났습니다.");
+        new RefreshOptions(mouseRefreshIntervalSeconds, mouseRefreshLimit, mouseRefreshJitterPercent);
         var plan = await ReadMouseRefresh(null);
         if (run != mouseGeneration || closing) return false;
         CheckRefreshPlan(plan);

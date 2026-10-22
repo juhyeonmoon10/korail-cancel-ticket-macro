@@ -208,7 +208,6 @@ internal sealed partial class MainWindow
             if (mousePaused) { CheckMousePauseDeadline(); return; }
             if (WindowState == FormWindowState.Minimized || !NativeMouseInput.IsForeground(this)) { InterruptMouseBooking("창 전환 또는 최소화"); return; }
             if (NativeMouseInput.ForeignInputVersion() != mouseLastInput) { InterruptMouseBooking("클릭·스크롤 또는 키 입력 감지"); return; }
-            if ((DateTime.UtcNow - mouseStarted).TotalMinutes > 10) throw new InvalidOperationException("10분 확인을 마쳤습니다. 필요한 조건으로 다시 조회하세요.");
             if (mouseReadAll || mouseMorePending) { await TickMouseMore(run); return; }
             if (mouseRefreshOnly || mouseRefreshPending)
             {

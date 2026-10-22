@@ -182,8 +182,6 @@ internal sealed partial class MainWindow
 
     bool CheckMoreInput()
     {
-        if ((DateTime.UtcNow - mouseStarted).TotalMinutes > 10)
-            throw new InvalidOperationException("10분 실행 기한이 지나 더보기를 중지했습니다.");
         if (NativeMouseInput.IsStopPressed()) throw new InvalidOperationException("F8로 중지했습니다.");
         if (NativeMouseInput.ForeignInputVersion() != mouseLastInput) { InterruptMouseBooking("더보기 전 직접 입력 감지"); return false; }
         if (WindowState == FormWindowState.Minimized || !NativeMouseInput.IsForeground(this)) { InterruptMouseBooking("더보기 전 창 전환"); return false; }

@@ -51,6 +51,12 @@ $delayArgs = $commonArgs + @(('/out:' + $delayExe), (Join-Path $sourceRoot 'Refr
 if ($LASTEXITCODE -ne 0) { throw 'Refresh delay test compilation failed.' }
 & $delayExe
 if ($LASTEXITCODE -ne 0) { throw 'Refresh delay tests failed.' }
+$optionsExe = Join-Path $binRoot 'RefreshOptionsTests.exe'
+$optionsArgs = $commonArgs + @(('/out:' + $optionsExe), (Join-Path $sourceRoot 'RefreshOptions.cs'), (Join-Path $sourceRoot 'RefreshOptionsTests.cs'))
+& $compiler @optionsArgs
+if ($LASTEXITCODE -ne 0) { throw 'Refresh options test compilation failed.' }
+& $optionsExe
+if ($LASTEXITCODE -ne 0) { throw 'Refresh options tests failed.' }
 $inputExe = Join-Path $binRoot 'NativeInputPolicyTests.exe'
 $inputArgs = $commonArgs + @(('/out:' + $inputExe), (Join-Path $sourceRoot 'NativeMouseInput.cs'), (Join-Path $sourceRoot 'NativeInputPolicyTests.cs'))
 & $compiler @inputArgs

@@ -33,8 +33,6 @@ internal sealed partial class MainWindow
     void CheckMousePauseDeadline()
     {
         CheckMouseMoreDeadline();
-        if ((DateTime.UtcNow - mouseStarted).TotalMinutes > 10)
-            throw new InvalidOperationException("10분 실행 기한이 지났습니다. 조건을 확인하고 다시 시작하세요.");
         if (mouseRefreshPending && (DateTime.UtcNow - mouseRefreshSent).TotalSeconds > 30)
             throw new InvalidOperationException("일시정지 중 조회 결과 확인 기한이 지났습니다. 추가 조회 없이 중지했습니다.");
     }
