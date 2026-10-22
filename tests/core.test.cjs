@@ -17,6 +17,24 @@ test('normalizes newlines, nonbreaking spaces, tabs and missing text', () => {
   assert.equal(core.normalize(null), '');
 });
 
+test('parses optional CSV train numbers with stable ordering and normalized duplicates', () => {
+  for (const value of ['', '  ', '\t\n']) assert.deepEqual(core.parseTrainNumbers(value), []);
+  assert.deepEqual(core.parseTrainNumbers(' 00541, 505,\n561,541,00505 '), ['541', '505', '561']);
+  assert.deepEqual(core.parseTrainNumbers('1,99999,00001'), ['1', '99999']);
+});
+
+test('rejects malformed, zero, non-string and overlong train-number entries', () => {
+  for (const value of [',505', '505,', '505,,541', '505, ,541', '0', '00000', '505,0', '-505', '+505', '5.05', '5e2', 'KTX505', '5 05', '５０５', '000505', '100000', '505;541', '505\n541', null, undefined, 505, true, ['505']])
+    assert.throws(() => core.parseTrainNumbers(value), Error, String(value));
+});
+
+test('limits CSV selection to twenty unique numbers without counting repeats twice', () => {
+  const twenty = Array.from({ length: 20 }, (_, index) => String(index + 1));
+  assert.deepEqual(core.parseTrainNumbers(twenty.join(',')), twenty);
+  assert.deepEqual(core.parseTrainNumbers(twenty.concat(twenty.slice().reverse()).join(',')), twenty);
+  assert.throws(() => core.parseTrainNumbers(twenty.concat('21').join(',')), /20/);
+});
+
 test('identifies a train without making its row number part of its identity', () => {
   const result = core.identity('3 KTX-산천\n000123 서울 07:30 부산 10:15 일반실 매진');
   assert.deepEqual(result, { train: 'KTX-산천 123', departure: '07:30', arrival: '10:15', key: 'KTX-산천 123|07:30|10:15' });

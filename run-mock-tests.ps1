@@ -27,6 +27,12 @@ $bookingArgs = $commonArgs + @(('/out:' + $bookingExe), (Join-Path $sourceRoot '
 if ($LASTEXITCODE -ne 0) { throw 'Booking attempt test compilation failed.' }
 & $bookingExe (Join-Path $dataRoot 'booking')
 if ($LASTEXITCODE -ne 0) { throw 'Booking attempt tests failed.' }
+$selectionExe = Join-Path $binRoot 'BookingSelectionTests.exe'
+$selectionArgs = $commonArgs + @(('/out:' + $selectionExe), (Join-Path $sourceRoot 'BookingAttempt.cs'), (Join-Path $sourceRoot 'BookingSelection.cs'), (Join-Path $sourceRoot 'BookingSelectionTests.cs'))
+& $compiler @selectionArgs
+if ($LASTEXITCODE -ne 0) { throw 'Booking selection test compilation failed.' }
+& $selectionExe
+if ($LASTEXITCODE -ne 0) { throw 'Booking selection tests failed.' }
 $diagnosticsExe = Join-Path $binRoot 'SiteDiagnosticsTests.exe'
 $diagnosticsArgs = $commonArgs + @(('/out:' + $diagnosticsExe), (Join-Path $sourceRoot 'SiteDiagnostics.cs'), (Join-Path $sourceRoot 'SiteDiagnosticsTests.cs'))
 & $compiler @diagnosticsArgs

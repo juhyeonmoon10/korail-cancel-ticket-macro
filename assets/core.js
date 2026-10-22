@@ -9,6 +9,20 @@
     return String(text == null ? '' : text).replace(/\s+/g, ' ').trim();
   }
 
+  function parseTrainNumbers(value) {
+    if (typeof value !== 'string') throw new Error('열차번호는 쉼표로 구분한 숫자로 입력하세요.');
+    if (!value.trim()) return [];
+    const numbers = [], seen = new Set();
+    for (const part of value.split(',')) {
+      const item = part.trim();
+      if (!/^\d{1,5}$/.test(item) || Number(item) === 0) throw new Error('열차번호는 1~5자리의 0보다 큰 숫자를 쉼표로 구분하세요. 빈 항목은 사용할 수 없습니다.');
+      const number = String(Number(item));
+      if (!seen.has(number)) { seen.add(number); numbers.push(number); }
+      if (numbers.length > 20) throw new Error('열차번호는 최대 20개까지 선택할 수 있습니다.');
+    }
+    return numbers;
+  }
+
   function identity(text) {
     const value = normalize(text);
     const times = Array.from(value.matchAll(/(?<![\d:])(?:[01]\d|2[0-3]):[0-5]\d(?![\d:])/g), match => match[0]);
@@ -63,5 +77,5 @@
     return boundedInteger(value, 30, 1, 120);
   }
 
-  return Object.freeze({ normalize, identity, isSeatAction, isSearchAction, blocker, intervalSeconds, maxChecks });
+  return Object.freeze({ normalize, parseTrainNumbers, identity, isSeatAction, isSearchAction, blocker, intervalSeconds, maxChecks });
 });

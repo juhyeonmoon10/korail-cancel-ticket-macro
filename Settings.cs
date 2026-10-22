@@ -14,6 +14,30 @@ using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
 
+internal static class TrainNumberSelection
+{
+    // Keep the persisted TrainNumber string compatible with older settings.
+    // Consumers share this numeric normalization for filtering and validation.
+    public static List<int> Parse(string value)
+    {
+        var result = new List<int>();
+        if (String.IsNullOrWhiteSpace(value)) return result;
+        var seen = new HashSet<int>();
+        foreach (string item in value.Split(','))
+        {
+            string token = item.Trim();
+            if (!Regex.IsMatch(token, @"\A[0-9]{1,5}\z"))
+                throw new FormatException("열차번호는 쉼표로 구분한 1~5자리 숫자로 입력하세요. 예: 505,541,561. 빈 항목은 넣을 수 없습니다.");
+            int number = Int32.Parse(token, NumberStyles.None, CultureInfo.InvariantCulture);
+            if (number == 0) throw new FormatException("열차번호는 0보다 커야 합니다.");
+            if (!seen.Add(number)) continue;
+            if (result.Count == 20) throw new FormatException("열차번호는 중복을 제외하고 최대 20개까지 지정할 수 있습니다.");
+            result.Add(number);
+        }
+        return result;
+    }
+}
+
 internal sealed class JourneySettings
 {
     public bool Enabled { get; set; }
@@ -42,7 +66,8 @@ internal sealed class JourneySettings
         if (!DateTime.TryParseExact(FromTime, "HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out from) ||
             !DateTime.TryParseExact(ToTime, "HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out to)) return "출발 시간대를 확인하세요.";
         if (from.TimeOfDay > to.TimeOfDay) return "출발 시간대의 시작은 끝보다 늦을 수 없습니다. 날짜별로 지정하세요.";
-        if (!String.IsNullOrWhiteSpace(TrainNumber) && !Regex.IsMatch(TrainNumber.Trim(), @"^[0-9]{1,5}$")) return "열차번호는 숫자만 입력하세요. 예: 101. 지정하지 않으려면 비워 두세요.";
+        try { TrainNumberSelection.Parse(TrainNumber); }
+        catch (FormatException ex) { return ex.Message; }
         if (Grade != "일반실" && Grade != "특실" && Grade != "우등실") return "좌석 등급을 선택하세요.";
         return null;
     }
@@ -300,7 +325,7 @@ internal sealed class SettingsDialog : Form
     readonly DateTimePicker date = new DateTimePicker { Format = DateTimePickerFormat.Custom, CustomFormat = "yyyy-MM-dd" };
     readonly DateTimePicker from = new DateTimePicker { Format = DateTimePickerFormat.Custom, CustomFormat = "HH:mm", ShowUpDown = true };
     readonly DateTimePicker to = new DateTimePicker { Format = DateTimePickerFormat.Custom, CustomFormat = "HH:mm", ShowUpDown = true };
-    readonly TextBox train = new TextBox { MaxLength = 5 };
+    readonly TextBox train = new TextBox { MaxLength = 400, AccessibleName = "열차번호 목록 (쉼표 구분)" };
     readonly ComboBox grade = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
     readonly CheckBox telegramEnabled = new CheckBox { Text = "예약 완료가 확인되면 텔레그램 알림 보내기", AutoSize = true };
     readonly TextBox token = new TextBox { UseSystemPasswordChar = true, MaxLength = 230 };
@@ -346,8 +371,8 @@ internal sealed class SettingsDialog : Form
         from.Width = 108; to.Width = 108; times.Controls.Add(from);
         times.Controls.Add(new Label { Text = "부터", AutoSize = true, Margin = new Padding(8, 7, 8, 0) }); times.Controls.Add(to);
         times.Controls.Add(new Label { Text = "까지 출발", AutoSize = true, Margin = new Padding(8, 7, 0, 0) });
-        Row(journeyLayout, 5, "출발 시간대", times); Row(journeyLayout, 6, "열차번호 (선택)", train); Row(journeyLayout, 7, "좌석 등급", grade);
-        Span(journeyLayout, new Label { Text = "열차번호 예: 101. 비워 두면 조건에 맞는 조회 결과에서 직접 고릅니다.\n열차 한 편과 좌석 등급을 선택한 뒤 화면의 조건과 다시 대조하세요.", Dock = DockStyle.Fill }, 8);
+        Row(journeyLayout, 5, "출발 시간대", times); Row(journeyLayout, 6, "열차번호 목록", train); Row(journeyLayout, 7, "좌석 등급", grade);
+        Span(journeyLayout, new Label { Text = "예: 505,541,561 · 쉼표로 구분해 최대 20개. 비워 두어도 됩니다.\n조회 목록에서 원하는 열차들을 선택하고 조건을 확인하세요.\n입력한 번호 순서대로 확인하며, 그중 한 편만 예약합니다.", Dock = DockStyle.Fill }, 8);
         journeyPage.Controls.Add(journeyLayout);
 
         var telegramLayout = FieldLayout(8);

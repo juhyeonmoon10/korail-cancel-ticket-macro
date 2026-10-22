@@ -318,5 +318,39 @@
     try { return observe(target, phase, suppliedDocument, now); }
     catch { return result('unknown', '화면 구조가 바뀌어 현재 단계를 확인하지 못했습니다.'); }
   }
-  return Object.freeze({ read, targetError, queryError, sameTrain, classifyNotice, forbiddenSeat, parseReceipt, parseSeatDetail, actionFor });
+  function readMany(targets, suppliedDocument, now) {
+    try {
+      if (!Array.isArray(targets) || targets.length < 1 || targets.length > 20)
+        return result('blocked', '후보 열차를 1개 이상 20개 이하로 선택하세요.');
+      const first = targets[0], numbers = new Set();
+      for (const target of targets) {
+        const invalid = targetError(target);
+        if (invalid) return result('blocked', invalid);
+        if (target.date !== first.date || station(target.departureStation) !== station(first.departureStation) ||
+          station(target.arrivalStation) !== station(first.arrivalStation) || target.grade !== first.grade || target.passengers !== first.passengers)
+          return result('blocked', '모든 후보는 같은 날짜·구간·좌석 등급·인원이어야 합니다.');
+        const number = /\d+$/.exec(trainsIn(target.train)[0])[0];
+        if (numbers.has(number)) return result('blocked', '같은 열차 번호가 후보 목록에 중복됐습니다.');
+        numbers.add(number);
+      }
+      const doc = suppliedDocument || root.document, S = root.KorailSiteAdapter;
+      // One synchronous observation pass on the same document. No input,
+      // navigation, timer or DOM mutation can be initiated by this reader.
+      const plans = targets.map(target => observe(target, 'select', doc, now));
+      const blocked = plans.find(plan => plan.state === 'blocked');
+      if (blocked) return blocked;
+      // A selection that predates this pass belongs to another booking phase.
+      // Even a one-candidate call must not reuse its already active price box.
+      if (doc && S && (Array.from(doc.querySelectorAll(S.cardSelector + ' > .tck_inner > .price_box.active')).some(shown) ||
+        Array.from(doc.querySelectorAll('#container > .ticket_reserv_wrap')).some(shown)))
+        return result('blocked', '이미 선택된 좌석 또는 예매 영역이 있습니다. 내용을 직접 확인하세요.');
+      const uncertain = plans.find(plan => plan.state !== 'ready' && !(plan.state === 'waiting' && plan.refreshEligible === true) ||
+        plan.state === 'ready' && (!plan.action || plan.action.kind !== 'seat'));
+      if (uncertain) return result('unknown', uncertain.message || '후보 열차의 좌석 상태를 모두 확인하지 못했습니다.');
+      const index = plans.findIndex(plan => plan.state === 'ready');
+      if (index >= 0) return { ...plans[index], selectedTarget: { ...targets[index] } };
+      return { ...result('waiting', '선택한 모든 후보 열차의 좌석이 매진입니다.'), refreshEligible: true };
+    } catch { return result('unknown', '화면 구조가 바뀌어 후보 열차의 상태를 확인하지 못했습니다.'); }
+  }
+  return Object.freeze({ read, readMany, targetError, queryError, sameTrain, classifyNotice, forbiddenSeat, parseReceipt, parseSeatDetail, actionFor });
 });

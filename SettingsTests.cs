@@ -16,6 +16,11 @@ internal static class SettingsTests
         catch (Exception ex) { Console.WriteLine("FAIL " + ex.GetType().Name + ": " + ex.Message.Replace(FakeToken, "[redacted]")); return 1; }
     }
     static void Check(bool value, string name) { if (!value) throw new InvalidOperationException(name); count++; Console.WriteLine("PASS " + name); }
+    static bool RejectsTrainSelection(string value)
+    {
+        try { TrainNumberSelection.Parse(value); return false; }
+        catch (FormatException ex) { return !String.IsNullOrWhiteSpace(ex.Message); }
+    }
     static TelegramSettings Valid() { return new TelegramSettings { Enabled = true, BotToken = FakeToken, ChatId = "-1001234567890" }; }
     static async Task Run(string directory)
     {
@@ -32,6 +37,25 @@ internal static class SettingsTests
         Check(!setup.HasCredentials, "incomplete connection requires setup");
         var settings = new AppSettings { Journey = new JourneySettings { Enabled = true, DepartureStation = "서울", ArrivalStation = "부산", Date = "2026-10-25", FromTime = "09:00", ToTime = "12:00", TrainNumber = "101", Grade = "일반실" }, Telegram = Valid() };
         Check(settings.Journey.Validate() == null, "journey validates");
+        Check(TrainNumberSelection.Parse(null).Count == 0 && TrainNumberSelection.Parse("").Count == 0 && TrainNumberSelection.Parse(" \t ").Count == 0,
+            "blank train selection leaves the number filter unrestricted");
+        var numbers = TrainNumberSelection.Parse(" 00505, 541,505, 00561,541 ");
+        Check(numbers.Count == 3 && numbers[0] == 505 && numbers[1] == 541 && numbers[2] == 561,
+            "CSV train numbers trim normalize and deduplicate in input order");
+        Check(numbers.Contains(Int32.Parse("00541")) && !numbers.Contains(543), "normalized number selection includes candidates and excludes other trains");
+        var bounds = TrainNumberSelection.Parse("00001,99999");
+        Check(bounds.Count == 2 && bounds[0] == 1 && bounds[1] == 99999, "positive one-to-five digit number bounds accepted");
+        foreach (string invalidNumber in new [] { "0", "00000", "100000", "000001", ",505", "505,", "505,,541", "505, ,541", "KTX505", "505/541", "5 05", "505.0", "+505", "-505", "５０５", "505\n541" })
+        {
+            Check(RejectsTrainSelection(invalidNumber), "invalid CSV train selection rejected: " + invalidNumber.Replace("\n", "\\n"));
+            var rejectedJourney = settings.Journey.Copy(); rejectedJourney.TrainNumber = invalidNumber;
+            Check(rejectedJourney.Validate() != null, "journey validation uses the shared number selection rules");
+        }
+        var twenty = new List<string>(); for (int i = 1; i <= 20; i++) twenty.Add(i.ToString());
+        string maximumSelection = String.Join(",", twenty);
+        Check(TrainNumberSelection.Parse(maximumSelection).Count == 20, "twenty unique train numbers accepted");
+        Check(TrainNumberSelection.Parse(maximumSelection + ",00001,00020").Count == 20, "duplicate tokens do not consume the unique train limit");
+        Check(RejectsTrainSelection(maximumSelection + ",21"), "twenty-one unique train numbers rejected");
         var invalidJourney = settings.Journey.Copy(); invalidJourney.ToTime = "08:00";
         Check(invalidJourney.Validate() != null, "reversed departure window rejected");
         invalidJourney = settings.Journey.Copy(); invalidJourney.TrainNumber = "101/../../";
@@ -42,6 +66,15 @@ internal static class SettingsTests
         var loaded = AppSettings.Load(file);
         Check(loaded.Telegram.BotToken == FakeToken && loaded.Telegram.Enabled && loaded.Journey.TrainNumber == "101", "DPAPI and journey roundtrip");
         Check(loaded.Telegram.HasCredentials, "saved connection skips setup after restart");
+        var multiTrainSettings = settings.Copy(); multiTrainSettings.Journey.TrainNumber = "00505, 541,505, 00561";
+        Check(multiTrainSettings.Journey.Validate() == null, "CSV train selection validates without changing persisted string format");
+        string multiTrainFile = Path.Combine(directory, "settings-multiple-trains.json"); multiTrainSettings.Save(multiTrainFile);
+        var multipleLoaded = AppSettings.Load(multiTrainFile);
+        Check(multipleLoaded.Journey.TrainNumber == multiTrainSettings.Journey.TrainNumber && multipleLoaded.Telegram.BotToken == FakeToken && multipleLoaded.LoadWarning == null,
+            "CSV train selection and existing DPAPI credentials roundtrip");
+        var loadedNumbers = TrainNumberSelection.Parse(multipleLoaded.Journey.TrainNumber);
+        Check(loadedNumbers.Count == 3 && loadedNumbers[0] == 505 && loadedNumbers[1] == 541 && loadedNumbers[2] == 561,
+            "reloaded CSV preserves normalized filter membership and input order");
         settings.Telegram.ChatId = "987654321"; settings.Save(file);
         Check(AppSettings.Load(file).Telegram.ChatId == "987654321", "atomic replacement saves updated setting");
         var success = new FakeHandler(HttpStatusCode.OK, "{\"ok\":true,\"result\":{\"message_id\":1}}");

@@ -20,6 +20,7 @@ internal sealed partial class MainWindow
     uint mouseLastInput;
     string mousePhase, mouseAttemptId;
     BookingTarget mouseTarget;
+    List<BookingTarget> mouseTargets;
     BookingAttemptStore mouseStore;
     DateTime mouseStarted, mousePhaseStarted;
 
@@ -47,10 +48,10 @@ internal sealed partial class MainWindow
             File.ReadAllText(Path.Combine(Program.BundleRoot, "korail-site.js")) + "\n" + File.ReadAllText(Path.Combine(Program.BundleRoot, "mouse-booking.js")));
         if (page == navigation) mouseReaderNavigation = page;
     }
-    object MouseTargetData()
+    static object MouseTargetData(BookingTarget target)
     {
-        return new { date = mouseTarget.Date, departureStation = mouseTarget.DepartureStation, arrivalStation = mouseTarget.ArrivalStation,
-            train = mouseTarget.Train, departure = mouseTarget.Departure, arrival = mouseTarget.Arrival, grade = mouseTarget.Grade, passengers = mouseTarget.Passengers };
+        return new { date = target.Date, departureStation = target.DepartureStation, arrivalStation = target.ArrivalStation,
+            train = target.Train, departure = target.Departure, arrival = target.Arrival, grade = target.Grade, passengers = target.Passengers };
     }
     async Task<Dictionary<string, object>> ReadMousePlan()
     {
@@ -66,7 +67,10 @@ internal sealed partial class MainWindow
             if (run != mouseGeneration || closing) return null;
             if (!MouseAllowedSource(view.CoreWebView2.Source)) throw new InvalidOperationException("예약을 확인할 공식 페이지를 벗어났습니다. 직접 결과를 확인하세요.");
             if (MouseDocumentChanged(page, source)) return null;
-            var raw = await view.CoreWebView2.ExecuteScriptAsync("window.KorailMouseBooking && window.KorailMouseBooking.read(" + json.Serialize(MouseTargetData()) + "," + json.Serialize(mousePhase) + ")");
+            string read = mousePhase == "select"
+                ? "window.KorailMouseBooking.readMany(" + json.Serialize(mouseTargets.Select(MouseTargetData).ToArray()) + ")"
+                : "window.KorailMouseBooking.read(" + json.Serialize(MouseTargetData(mouseTarget)) + "," + json.Serialize(mousePhase) + ")";
+            var raw = await view.CoreWebView2.ExecuteScriptAsync("window.KorailMouseBooking && " + read);
             if (run != mouseGeneration || closing) return null;
             if (!MouseAllowedSource(view.CoreWebView2.Source)) throw new InvalidOperationException("예약을 확인할 공식 페이지를 벗어났습니다. 직접 결과를 확인하세요.");
             if (MouseDocumentChanged(page, source) || raw == null || raw == "null") return null;
@@ -109,26 +113,24 @@ internal sealed partial class MainWindow
             string raw = await view.CoreWebView2.ExecuteScriptAsync("(() => {const h=window.KorailDesktopHelper;const s=window.KorailSiteAdapter;if(!h||!s)return null;return {selection:h.snapshot(),query:s.query(document)};})()");
             if (startRun != mouseGeneration || closing) return;
             var data = json.Deserialize<Dictionary<string, object>>(raw);
-            var selection = ObjectValue(data, "selection"); var query = ObjectValue(data, "query"); var target = ObjectValue(selection, "target");
-            if (target == null || query == null || !query.ContainsKey("supported") || !Object.Equals(query["supported"], true) || !selection.ContainsKey("confirmed") || !Object.Equals(selection["confirmed"], true))
-                throw new InvalidOperationException("날짜·구간·인원 1명으로 직접 조회한 뒤 ‘열차 목록 읽기 → 이 열차 선택’을 누르고 확인란을 체크하세요.");
-            mouseTarget = new BookingTarget { Date = Get(query, "date"), DepartureStation = Get(query, "departureStation"), ArrivalStation = Get(query, "arrivalStation"),
-                Train = Get(target, "train"), Departure = Get(target, "departure"), Arrival = Get(target, "arrival"), Grade = Get(target, "grade"), Passengers = 1 };
-            string issue = mouseTarget.Validate(); if (issue != null) throw new InvalidOperationException(issue);
+            var selection = ObjectValue(data, "selection"); var query = ObjectValue(data, "query");
+            mouseTargets = BookingSelection.FromSnapshot(selection, query);
+            mouseTarget = mouseTargets[0].Copy();
             if (!mouseDemo && String.CompareOrdinal(mouseTarget.Date, DateTime.Today.ToString("yyyy-MM-dd")) < 0) throw new InvalidOperationException("과거 날짜는 예약할 수 없습니다. 다시 조회하세요.");
             if (!mouseDemo && settings.Journey.Enabled)
             {
                 var j = settings.Journey;
-                if (j.Date != mouseTarget.Date || j.DepartureStation.Trim().TrimEnd('역') != mouseTarget.DepartureStation.TrimEnd('역') ||
-                    j.ArrivalStation.Trim().TrimEnd('역') != mouseTarget.ArrivalStation.TrimEnd('역') || j.Grade != mouseTarget.Grade ||
-                    String.CompareOrdinal(mouseTarget.Departure, j.FromTime) < 0 || String.CompareOrdinal(mouseTarget.Departure, j.ToTime) > 0 ||
-                    (!String.IsNullOrWhiteSpace(j.TrainNumber) && Int32.Parse(j.TrainNumber) != Int32.Parse(Regex.Match(mouseTarget.Train, @"\d+$").Value)))
+                var allowedNumbers = TrainNumberSelection.Parse(j.TrainNumber);
+                if (mouseTargets.Any(target => j.Date != target.Date || j.DepartureStation.Trim().TrimEnd('역') != target.DepartureStation.TrimEnd('역') ||
+                    j.ArrivalStation.Trim().TrimEnd('역') != target.ArrivalStation.TrimEnd('역') || j.Grade != target.Grade ||
+                    String.CompareOrdinal(target.Departure, j.FromTime) < 0 || String.CompareOrdinal(target.Departure, j.ToTime) > 0 ||
+                    (allowedNumbers.Count > 0 && !allowedNumbers.Contains(Int32.Parse(Regex.Match(target.Train, @"(\d{1,5})\s*$").Groups[1].Value, CultureInfo.InvariantCulture)))))
                     throw new InvalidOperationException("선택한 열차가 저장한 날짜·구간·열차·등급과 다릅니다.");
             }
             if (!mouseDemo && (!settings.Telegram.Enabled || settings.Telegram.Validate() != null))
                 throw new InvalidOperationException("먼저 텔레그램 설정에서 본인의 봇 토큰과 Chat ID를 저장하고 알림을 켜세요.");
             mouseStore = new BookingAttemptStore(Path.Combine(Program.DataRoot, mouseDemo ? "demo-booking-attempts.json" : "booking-attempts.json"));
-            if (mouseStore.FindByTarget(mouseTarget) != null) throw new InvalidOperationException("이 여정에 예약 시도 기록이 있습니다. ‘예약 기록’에서 실제 결과를 확인한 후 처리하세요. 자동으로 다시 예매하지 않습니다.");
+            if (mouseTargets.Any(target => mouseStore.FindByTarget(target) != null)) throw new InvalidOperationException("선택 목록 중 예약 시도 기록이 있는 열차가 있습니다. ‘예약 기록’에서 실제 결과를 확인하세요. 다른 열차로 바꿔 자동 예매하지 않습니다.");
             mouseAttemptId = null; mouseSubmitted = false; mousePhase = "select"; mouseNoticeCount = 0; mouseScrollCount = 0;
             mouseReaderNavigation = -1; mouseStarted = mousePhaseStarted = DateTime.UtcNow;
             await EnsureMouseReader();
@@ -142,7 +144,7 @@ internal sealed partial class MainWindow
             if (!AutomationAvailable()) return;
             siteDiagnostics.AddAction("start");
             StartMouseLoop();
-            status.Text = (mouseDemo ? "[모의 연습] " : "") + mouseTarget.Date + " · " + mouseTarget.Train + " · " + mouseTarget.Grade + " 확인 중 · F8로 중지";
+            status.Text = (mouseDemo ? "[모의 연습] " : "") + mouseTarget.Date + " · " + String.Join(", ", mouseTargets.Select(target => target.Train)) + " · " + mouseTarget.Grade + " 중 한 편 확인 · F8 중지";
         }
         catch (Exception ex) { if (startRun == mouseGeneration) StopMouseBooking("시작하지 못했습니다. " + ex.Message); }
     }
@@ -163,7 +165,7 @@ internal sealed partial class MainWindow
                 throw new InvalidOperationException("실제로 제출한 뒤 결과가 확인되지 않은 예약 기록만 다시 확인할 수 있습니다.");
             if (!NativeMouseInput.IsForeground(this)) throw new InvalidOperationException("이 프로그램 창을 맨 앞으로 표시한 후 확인하세요.");
             mouseDemo = false; mouseCompletionRecheck = true;
-            mouseStore = store; mouseAttemptId = attempt.Id; mouseTarget = attempt.Target.Copy();
+            mouseStore = store; mouseAttemptId = attempt.Id; mouseTarget = attempt.Target.Copy(); mouseTargets = null;
             mouseSubmitted = true; mousePhase = "submitted"; mouseNoticeCount = 0; mouseScrollCount = 0;
             mouseReaderNavigation = -1; mouseStarted = mousePhaseStarted = DateTime.UtcNow;
             await EnsureMouseReader();
@@ -190,6 +192,7 @@ internal sealed partial class MainWindow
             try { mouseStore.RecordUnknown(mouseAttemptId, reason ?? "앱 중지 또는 종료. 공식 화면에서 예약 결과 확인 필요."); } catch { }
         }
         mouseCompletionRecheck = false;
+        mouseTargets = null;
         if (!closing && reason != null) status.Text = reason;
     }
     async Task TickMouseBooking()
@@ -268,6 +271,7 @@ internal sealed partial class MainWindow
             else if (mouseSubmitted) throw new InvalidOperationException("예매 요청 후 추가 입력을 중지했습니다.");
             if (kind != "seat" && kind != "notice" && kind != "reserve" && kind != "receipt-notice") throw new InvalidOperationException("알 수 없는 예약 단계입니다.");
             if (kind == "seat" && mousePhase != "select") throw new InvalidOperationException("좌석 선택이 취소되었거나 상태가 바뀌었습니다.");
+            BookingTarget candidate = kind == "seat" ? BookingSelection.MatchSelected(ObjectValue(plan, "selectedTarget"), mouseTargets) : null;
             double x = NumberValue(action, "x"), y = NumberValue(action, "y"), width = NumberValue(action, "viewportWidth"), height = NumberValue(action, "viewportHeight");
             if (width <= 0 || height <= 0) throw new InvalidOperationException("브라우저 크기를 확인하지 못했습니다.");
             if (x < 0 || x >= width) throw new InvalidOperationException("버튼이 가로 화면 밖에 있습니다. 창 크기를 조정하세요.");
@@ -308,6 +312,8 @@ internal sealed partial class MainWindow
                 NumberValue(point, "viewportWidth") != width || NumberValue(point, "viewportHeight") != height ||
                 origin != view.PointToScreen(Point.Empty) || viewport != view.ClientSize)
                 return;
+            if (kind == "seat" && BookingSelection.MatchSelected(ObjectValue(fresh, "selectedTarget"), mouseTargets).Key != candidate.Key)
+                return;
             if (NativeMouseInput.ForeignInputVersion() != mouseLastInput) throw new InvalidOperationException("입력이 감지되어 클릭을 취소했습니다.");
             if (mousePhase != "select" && (DateTime.UtcNow - mousePhaseStarted).TotalSeconds > 30) throw new InvalidOperationException("30초 확인 기한이 지나 추가 입력을 중지했습니다. 공식 예약 결과를 직접 확인하세요.");
             var screen = view.PointToScreen(new Point((int)Math.Round(x * view.ClientSize.Width / width), (int)Math.Round(y * view.ClientSize.Height / height)));
@@ -317,7 +323,14 @@ internal sealed partial class MainWindow
                 mouseStore.MarkSubmitted(mouseAttemptId); mouseSubmitted = true; mousePhase = "submitted"; mousePhaseStarted = DateTime.UtcNow;
                 status.Text = "선택한 열차의 예매 버튼을 한 번 누릅니다. 결과 확인 중 재시도하지 않습니다.";
             }
-            else if (kind == "seat") { ResetMouseRefresh(); mousePhase = "drawer"; mousePhaseStarted = DateTime.UtcNow; status.Text = "선택한 열차의 " + mouseTarget.Grade + " 가격 선택"; }
+            else if (kind == "seat")
+            {
+                // Freeze one alternative before the first real seat click.
+                // All following notices, submission and receipt checks use it.
+                mouseTarget = candidate.Copy();
+                ResetMouseRefresh(); mousePhase = "drawer"; mousePhaseStarted = DateTime.UtcNow;
+                status.Text = mouseTarget.Train + " · " + mouseTarget.Grade + " 가격 선택 · 이 열차 한 편만 진행";
+            }
             else if (++mouseNoticeCount > 3) throw new InvalidOperationException("예약 안내가 반복되어 중지했습니다.");
             if (!AutomationAvailable()) { StopMouseBooking(status.Text); return; }
             siteDiagnostics.AddAction(kind == "seat" ? "native-seat" : kind == "notice" ? "native-notice" : kind == "receipt-notice" ? "native-receipt-notice" : "native-reserve");

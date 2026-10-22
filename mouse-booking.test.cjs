@@ -504,3 +504,147 @@ test('refund close control may use the exact accessible label with a close glyph
   const f = refundFixture(), close = f.modal.querySelectorAll('button')[1];
   close.setAttribute('aria-label', '레이어닫기'); close.textContent = '다른 작업'; assert.equal(f.read().state, 'blocked');
 });
+
+// Multiple real-adapter rows, reconstructed from the observed list structure.
+// The reader gets the live document; its output must not change that document.
+function manyFixture(states = ['available', 'available']) {
+  const f = isolatedNoticeFixture();
+  f.modal.remove(); f.app.removeAttribute('aria-hidden'); f.app.removeAttribute('inert');
+  const template = f.row.cloneNode(true), list = f.row.parentElement;
+  list.replaceChildren();
+  const targets = states.map((_, index) => Object.freeze({ ...target, train: 'KTX ' + (513 + index * 2) }));
+  const rows = targets.map((selected, index) => {
+    const row = template.cloneNode(true);
+    row.querySelector('.num').textContent = selected.train.split(' ')[1];
+    list.append(row);
+    if (states[index] === 'sold-out') row.querySelector('.gen').innerHTML = '<div class="inner">매진</div>';
+    else if (states[index] === 'unknown') row.querySelector('.gen .txt_price').textContent = '가격 확인 중';
+    return row;
+  });
+  const rect = node => {
+    const index = rows.indexOf(node.closest('.tckList'));
+    return { left: node.closest('.spe') ? 400 : 100, top: 100 + Math.max(index, 0) * 50, width: 120, height: 40 };
+  };
+  f.dom.window.HTMLElement.prototype.getClientRects = function () { return [rect(this)]; };
+  f.dom.window.HTMLElement.prototype.getBoundingClientRect = function () { return rect(this); };
+  f.doc.elementFromPoint = (x, y) => Array.from(f.doc.querySelectorAll('.price_box a')).find(node => {
+    const box = rect(node); return x >= box.left && x < box.left + box.width && y >= box.top && y < box.top + box.height;
+  }) || null;
+  return { ...f, rows, targets, read: (selected = targets) => B.readMany(selected, f.doc) };
+}
+
+test('many candidates skip only explicit sold-out rows and return the next available target without DOM or input changes', () => {
+  const f = manyFixture(['sold-out', 'available']), before = f.doc.documentElement.outerHTML;
+  let inputs = 0;
+  for (const kind of ['click', 'input', 'change', 'submit', 'scroll']) f.doc.addEventListener(kind, () => inputs++);
+  const plan = f.read();
+  assert.equal(plan.state, 'ready'); assert.equal(plan.action.kind, 'seat');
+  assert.deepEqual(plan.selectedTarget, f.targets[1]);
+  assert.notEqual(plan.selectedTarget, f.targets[1], 'returned identity is detached from the supplied target');
+  assert.equal(plan.action.y, 170);
+  assert.equal(f.doc.documentElement.outerHTML, before); assert.equal(inputs, 0);
+});
+
+test('many candidate priority follows input order instead of document order and never skips an off-screen first choice', () => {
+  const f = manyFixture();
+  assert.deepEqual(f.read().selectedTarget, f.targets[0]);
+  assert.deepEqual(f.read([f.targets[1], f.targets[0]]).selectedTarget, f.targets[1]);
+  Object.defineProperty(f.dom.window, 'innerHeight', { configurable: true, value: 160 });
+  const offscreen = f.read([f.targets[1], f.targets[0]]);
+  assert.deepEqual(offscreen.selectedTarget, f.targets[1]); assert.equal(offscreen.action.inViewport, false);
+});
+
+test('many candidates permit a refresh only when every selected train is explicitly sold out', () => {
+  const f = manyFixture(['sold-out', 'sold-out']);
+  const plan = f.read();
+  assert.equal(plan.state, 'waiting'); assert.equal(plan.refreshEligible, true);
+  assert.equal(plan.action, undefined); assert.equal(plan.selectedTarget, undefined);
+  assert.equal(f.read([f.targets[0]]).refreshEligible, true);
+});
+
+test('a missing, duplicate or unknown candidate stops selection even when another candidate is available', () => {
+  const missing = manyFixture(); missing.rows[1].remove();
+  assert.equal(missing.read().state, 'unknown'); assert.equal(missing.read().selectedTarget, undefined);
+  const duplicate = manyFixture(); duplicate.rows[1].after(duplicate.rows[1].cloneNode(true));
+  assert.equal(duplicate.read().state, 'blocked'); assert.equal(duplicate.read().action, undefined);
+  for (const states of [['unknown', 'available'], ['available', 'unknown'], ['sold-out', 'unknown']]) {
+    const f = manyFixture(states), plan = f.read();
+    assert.equal(plan.state, 'unknown'); assert.equal(plan.action, undefined);
+    assert.notEqual(plan.refreshEligible, true); assert.equal(plan.selectedTarget, undefined);
+  }
+  const disabled = manyFixture(); disabled.rows[1].querySelector('.gen a').setAttribute('aria-disabled', 'true');
+  assert.equal(disabled.read().state, 'unknown'); assert.equal(disabled.read().action, undefined);
+});
+
+test('many candidates reject empty, excessive, malformed, duplicate-number and mixed query selections', () => {
+  const f = manyFixture();
+  for (const selected of [null, {}, [], Array(21).fill(target), [null], [{ ...target, passengers: 2 }],
+    [f.targets[0], f.targets[0]], [f.targets[0], { ...f.targets[0], train: 'KTX 00513' }],
+    [f.targets[0], { ...f.targets[0], departure: '12:20' }], [f.targets[0], { ...f.targets[0], train: 'ITX-마음 513' }]]) {
+    assert.equal(f.read(selected).state, 'blocked'); assert.equal(f.read(selected).action, undefined);
+  }
+  for (const changed of [{ date: '2026-10-23' }, { departureStation: '용산' }, { arrivalStation: '부산' }, { grade: '특실' }])
+    assert.equal(f.read([f.targets[0], { ...f.targets[1], ...changed }]).state, 'blocked');
+  const twenty = manyFixture(Array(20).fill('sold-out'));
+  assert.equal(twenty.read().refreshEligible, true);
+  const spaced = [{ ...f.targets[0], train: 'KTX   513', departureStation: '서울역', arrivalStation: '전주역' }, f.targets[1]];
+  assert.equal(f.read(spaced).state, 'ready', 'existing train and station normalization is preserved');
+});
+
+test('many candidates reject changed displayed query, train identity, grade and forbidden seats', () => {
+  for (const mutate of [
+    f => { f.doc.getElementById('startDate').value = '2026-10-23(금) 00:00'; },
+    f => { f.doc.getElementById('labelstart').value = '용산'; },
+    f => { f.doc.getElementById('labelple').value = '총 2명'; },
+    f => { f.doc.querySelector('.select02 .selected').textContent = '환승'; },
+    f => { f.rows[1].querySelector('.gen .txt_ch').textContent = '특실'; },
+    f => { f.rows[1].querySelector('.gen .txt_price').textContent = '입석 + 좌석'; }
+  ]) { const f = manyFixture(); mutate(f); assert.equal(f.read().state, 'blocked'); assert.equal(f.read().action, undefined); }
+  const changed = manyFixture(); changed.rows[1].querySelector('h3 span:last-child').textContent = '(12:20 ~ 14:01)';
+  assert.equal(changed.read().state, 'unknown', 'a changed schedule does not become another candidate');
+});
+
+test('many candidates propagate automation blocks, authentication and unknown dialogs without skipping them', () => {
+  for (const copy of ['자동화된 요청으로 감지되어 차단되었습니다. CODE : -8002', '로그인이 필요합니다.', '보안 문자를 입력하세요.', '오류가 발생했습니다.']) {
+    const f = manyFixture(), notice = f.doc.createElement('p'); notice.textContent = copy; f.doc.body.prepend(notice);
+    const plan = f.read(); assert.equal(plan.state, 'blocked'); assert.equal(plan.action, undefined); assert.equal(plan.selectedTarget, undefined);
+    if (copy.includes('-8002')) assert.equal(plan.blockCode, '-8002');
+  }
+  const captcha = manyFixture(); captcha.doc.body.insertAdjacentHTML('beforeend', '<input autocomplete="one-time-code">');
+  assert.equal(captcha.read().state, 'blocked');
+  const modal = manyFixture(); modal.doc.body.insertAdjacentHTML('beforeend', '<div role="dialog"><p>직접 확인하세요.</p><button>확인</button></div>');
+  assert.equal(modal.read().state, 'blocked');
+});
+
+test('many candidates stop on any visible active selection or existing drawer including a one-target call', () => {
+  for (const count of [1, 2]) {
+    for (const state of ['available', 'sold-out']) {
+      const active = manyFixture([state, state]); active.rows[0].querySelector('.gen').classList.add('active');
+      assert.equal(active.read(active.targets.slice(0, count)).state, 'blocked');
+      const drawer = manyFixture([state, state]); drawer.doc.getElementById('container').insertAdjacentHTML('beforeend', '<div class="ticket_reserv_wrap">예매</div>');
+      assert.equal(drawer.read(drawer.targets.slice(0, count)).state, 'blocked');
+    }
+  }
+});
+
+test('many observations expose a changed candidate on re-read without retaining or changing any selection', () => {
+  const f = manyFixture(['available', 'available']);
+  const first = f.read(); assert.deepEqual(first.selectedTarget, f.targets[0]);
+  f.rows[0].querySelector('.gen').innerHTML = '<div class="inner">매진</div>';
+  const before = f.doc.documentElement.outerHTML, second = f.read();
+  assert.deepEqual(second.selectedTarget, f.targets[1]); assert.notDeepEqual(first.selectedTarget, second.selectedTarget);
+  assert.equal(f.doc.documentElement.outerHTML, before); assert.equal(f.doc.querySelectorAll('.price_box.active').length, 0);
+  f.rows[1].querySelector('.gen .txt_price').textContent = '가격 확인 중';
+  assert.equal(f.read().state, 'unknown'); assert.equal(f.read().selectedTarget, undefined);
+});
+
+test('many candidate read stays synchronous and fails closed when analysis is unavailable or throws', () => {
+  const f = manyFixture();
+  assert.equal(typeof f.read().then, 'undefined');
+  const adapter = globalThis.KorailSiteAdapter;
+  globalThis.KorailSiteAdapter = null;
+  assert.equal(f.read().state, 'unknown');
+  globalThis.KorailSiteAdapter = { ...adapter, cards() { throw new Error('unexpected layout'); } };
+  assert.equal(f.read().state, 'unknown'); assert.equal(f.read().action, undefined);
+  globalThis.KorailSiteAdapter = adapter;
+});
