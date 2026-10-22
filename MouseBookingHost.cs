@@ -196,6 +196,7 @@ internal sealed partial class MainWindow
         mouseCompletionRecheck = false;
         mouseTargets = null;
         if (!closing && reason != null) status.Text = reason;
+        if (!closing) UpdateShellState();
     }
     async Task TickMouseBooking()
     {

@@ -10,13 +10,13 @@ $commonArgs = @('/nologo','/target:exe','/platform:x64','/utf8output','/langvers
   '/reference:System.Windows.Forms.dll','/reference:System.Web.Extensions.dll',
   '/reference:System.Net.Http.dll','/reference:System.Security.dll')
 $settingsExe = Join-Path $binRoot 'SettingsTests.exe'
-$settingsArgs = $commonArgs + @(('/out:' + $settingsExe), (Join-Path $sourceRoot 'Settings.cs'), (Join-Path $sourceRoot 'SettingsTests.cs'))
+$settingsArgs = $commonArgs + @(('/out:' + $settingsExe), (Join-Path $sourceRoot 'UiTheme.cs'), (Join-Path $sourceRoot 'Settings.cs'), (Join-Path $sourceRoot 'SettingsTests.cs'))
 & $compiler @settingsArgs
 if ($LASTEXITCODE -ne 0) { throw 'Settings test compilation failed.' }
 & $settingsExe $dataRoot
 if ($LASTEXITCODE -ne 0) { throw 'Settings mock tests failed.' }
 $notificationExe = Join-Path $binRoot 'NotificationTests.exe'
-$notificationArgs = $commonArgs + @(('/out:' + $notificationExe), (Join-Path $sourceRoot 'Settings.cs'), (Join-Path $sourceRoot 'NotificationBridge.cs'), (Join-Path $sourceRoot 'NotificationTests.cs'))
+$notificationArgs = $commonArgs + @(('/out:' + $notificationExe), (Join-Path $sourceRoot 'UiTheme.cs'), (Join-Path $sourceRoot 'Settings.cs'), (Join-Path $sourceRoot 'NotificationBridge.cs'), (Join-Path $sourceRoot 'NotificationTests.cs'))
 & $compiler @notificationArgs
 if ($LASTEXITCODE -ne 0) { throw 'Notification test compilation failed.' }
 & $notificationExe

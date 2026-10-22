@@ -300,41 +300,43 @@ internal sealed class TelegramChatDialog : Form
     public TelegramChat SelectedChat { get; private set; }
     public TelegramChatDialog(IList<TelegramChat> chats)
     {
-        Text = "알림을 받을 텔레그램 대화 선택"; ClientSize = new Size(610, 320);
-        Font = new Font("맑은 고딕", 10); StartPosition = FormStartPosition.CenterParent;
+        UiTheme.StyleForm(this);
+        Text = "알림을 받을 텔레그램 대화 선택"; ClientSize = new Size(660, 390);
+        StartPosition = FormStartPosition.CenterParent; Padding = new Padding(24);
         ShowInTaskbar = false; MinimizeBox = false; MaximizeBox = false; FormBorderStyle = FormBorderStyle.FixedDialog;
-        var heading = new Label { Dock = DockStyle.Top, Height = 64, Padding = new Padding(14, 12, 14, 0), Text = "내가 알림을 받을 개인 대화를 직접 선택하세요.\n선택하면 Chat ID만 설정에 입력됩니다." };
-        var list = new ListBox { Dock = DockStyle.Fill, HorizontalScrollbar = true, IntegralHeight = false };
+        var heading = new Label { Dock = DockStyle.Top, Height = 64, ForeColor = UiTheme.Muted, Text = "알림을 받을 개인 대화를 선택하세요.\n선택한 대화의 Chat ID를 설정에 입력합니다." };
+        var list = new ListBox { Dock = DockStyle.Fill, HorizontalScrollbar = true, IntegralHeight = false, BorderStyle = BorderStyle.FixedSingle, BackColor = UiTheme.Surface, ForeColor = UiTheme.Text, ItemHeight = 30 };
         foreach (var chat in chats) list.Items.Add(chat);
         list.SelectedIndex = -1;
-        var actions = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 52, Padding = new Padding(8), FlowDirection = FlowDirection.RightToLeft };
-        var cancel = new Button { Text = "취소", Width = 95, Height = 32, DialogResult = DialogResult.Cancel };
-        var select = new Button { Text = "이 대화 선택", Width = 120, Height = 32, Enabled = false };
+        var actions = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 64, Padding = new Padding(0, 18, 0, 0), FlowDirection = FlowDirection.RightToLeft };
+        var cancel = new Button { Text = "취소", Width = 100, Height = 40, DialogResult = DialogResult.Cancel };
+        var select = new Button { Text = "이 대화 선택", Width = 132, Height = 40, Enabled = false };
+        UiTheme.StyleButton(cancel); UiTheme.StyleButton(select, "primary");
         list.SelectedIndexChanged += delegate { select.Enabled = list.SelectedIndex >= 0; };
         select.Click += delegate { if (list.SelectedItem == null) return; SelectedChat = (TelegramChat)list.SelectedItem; DialogResult = DialogResult.OK; Close(); };
-        actions.Controls.Add(cancel); actions.Controls.Add(select); Controls.Add(list); Controls.Add(heading); Controls.Add(actions); CancelButton = cancel;
+        actions.Controls.Add(select); actions.Controls.Add(cancel); Controls.Add(list); Controls.Add(heading); Controls.Add(actions); CancelButton = cancel; AcceptButton = select;
     }
 }
 
 internal sealed class SettingsDialog : Form
 {
-    readonly TabControl tabs = new TabControl { Dock = DockStyle.Fill };
+    readonly TabControl tabs = new TabControl { Dock = DockStyle.Fill, Padding = new Point(20, 11) };
     readonly CheckBox journeyEnabled = new CheckBox { Text = "저장한 열차 조건으로 대상 고르기", AutoSize = true };
-    readonly TextBox departure = new TextBox { MaxLength = 40 };
-    readonly TextBox arrival = new TextBox { MaxLength = 40 };
+    readonly TextBox departure = new TextBox { MaxLength = 40, AccessibleName = "출발역" };
+    readonly TextBox arrival = new TextBox { MaxLength = 40, AccessibleName = "도착역" };
     readonly DateTimePicker date = new DateTimePicker { Format = DateTimePickerFormat.Custom, CustomFormat = "yyyy-MM-dd" };
     readonly DateTimePicker from = new DateTimePicker { Format = DateTimePickerFormat.Custom, CustomFormat = "HH:mm", ShowUpDown = true };
     readonly DateTimePicker to = new DateTimePicker { Format = DateTimePickerFormat.Custom, CustomFormat = "HH:mm", ShowUpDown = true };
     readonly TextBox train = new TextBox { MaxLength = 400, AccessibleName = "열차번호 목록 (쉼표 구분)" };
     readonly ComboBox grade = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
     readonly CheckBox telegramEnabled = new CheckBox { Text = "예약 완료가 확인되면 텔레그램 알림 보내기", AutoSize = true };
-    readonly TextBox token = new TextBox { UseSystemPasswordChar = true, MaxLength = 230 };
-    readonly TextBox chatId = new TextBox { MaxLength = 21 };
-    readonly Label notice = new Label { AutoSize = false, Dock = DockStyle.Fill, ForeColor = Color.FromArgb(45, 68, 84) };
+    readonly TextBox token = new TextBox { UseSystemPasswordChar = true, MaxLength = 230, AccessibleName = "내 봇 토큰" };
+    readonly TextBox chatId = new TextBox { MaxLength = 21, AccessibleName = "내 Chat ID" };
+    readonly Label notice = new Label { AutoSize = false, Dock = DockStyle.Fill, ForeColor = UiTheme.Muted, AccessibleName = "설정 안내" };
     readonly Button test = new Button { Text = "테스트 알림 보내기", AutoSize = true, Padding = new Padding(10, 4, 10, 4) };
     readonly Button findChat = new Button { Text = "Chat ID 찾기", AutoSize = true, Padding = new Padding(10, 4, 10, 4) };
     readonly Button disconnect = new Button { Text = "연결 정보 지우기", AutoSize = true, Padding = new Padding(10, 4, 10, 4) };
-    readonly Button save = new Button { Text = "저장", Width = 104, Height = 36 };
+    readonly Button save = new Button { Text = "설정 저장", Width = 120, Height = 42 };
     bool working;
     public AppSettings Result { get; private set; }
 
@@ -345,58 +347,61 @@ internal sealed class SettingsDialog : Form
     public SettingsDialog(AppSettings initial, bool openTelegram, bool firstRun)
     {
         initial = initial ?? new AppSettings();
+        UiTheme.StyleForm(this);
         Text = firstRun ? "처음 시작 · 내 텔레그램 연결" : "열차 선택 · 텔레그램 설정";
-        ClientSize = new Size(700, 704); MinimumSize = new Size(660, 740);
+        ClientSize = new Size(760, 780); MinimumSize = new Size(720, 640);
         StartPosition = FormStartPosition.CenterParent; ShowInTaskbar = false;
-        Font = new Font("맑은 고딕", 10); BackColor = Color.FromArgb(246, 249, 251);
         MaximizeBox = false; MinimizeBox = false;
-        var root = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(16), ColumnCount = 1, RowCount = 3 };
+        foreach (Control input in new Control[] { departure, arrival, date, from, to, train, grade, token, chatId }) UiTheme.StyleInput(input);
+        UiTheme.StyleButton(test); UiTheme.StyleButton(findChat); UiTheme.StyleButton(disconnect, "quiet"); UiTheme.StyleButton(save, "primary");
+        var root = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(24), ColumnCount = 1, RowCount = 4 };
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 84));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 72));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
-        var journeyPage = new TabPage("열차 선택") { BackColor = BackColor };
-        var telegramPage = new TabPage("내 텔레그램 연결") { BackColor = BackColor };
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 76));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 54));
+        var heading = new Panel { Dock = DockStyle.Fill };
+        heading.Controls.Add(new Label { Text = firstRun ? "예약 알림부터 연결하세요" : "나에게 맞게 설정하세요", Dock = DockStyle.Top, Height = 38, Font = new Font(Font.FontFamily, 18, FontStyle.Bold), ForeColor = UiTheme.Text });
+        heading.Controls.Add(new Label { Text = firstRun ? "본인의 텔레그램 봇으로 예약 결과를 받아보세요." : "원하는 열차 조건과 예약 알림을 한 곳에서 관리합니다.", Dock = DockStyle.Bottom, Height = 32, ForeColor = UiTheme.Muted });
+        var journeyPage = new TabPage("열차 선택") { BackColor = UiTheme.Surface, AutoScroll = true };
+        var telegramPage = new TabPage("텔레그램 연결") { BackColor = UiTheme.Surface, AutoScroll = true };
         tabs.TabPages.Add(journeyPage); tabs.TabPages.Add(telegramPage);
         tabs.SelectedIndex = openTelegram || firstRun ? 1 : 0;
-        var journeyLayout = FieldLayout(9);
-        journeyLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
-        journeyLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
-        for (int i = 2; i <= 7; i++) journeyLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
-        journeyLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        Span(journeyLayout, journeyEnabled, 0);
-        Span(journeyLayout, new Label { Text = "공식 화면에서 같은 구간·날짜로 조회한 뒤 열차를 고르세요.\n저장한 조건이 코레일 화면에 자동 입력되지는 않습니다.", Dock = DockStyle.Fill, AutoSize = false }, 1);
-        Row(journeyLayout, 2, "출발역", departure); Row(journeyLayout, 3, "도착역", arrival); Row(journeyLayout, 4, "승차 날짜", date);
-        var times = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
+        var journeyLayout = FieldLayout(10);
+        Span(journeyLayout, SectionHeading("원하는 열차 조건"), 0);
+        Span(journeyLayout, Hint("코레일에서 같은 구간·날짜로 직접 조회한 뒤 열차를 고르세요.\n아래 조건은 조회 목록에서 대상을 고를 때 사용합니다."), 1);
+        Span(journeyLayout, journeyEnabled, 2);
+        Row(journeyLayout, 3, "출발역", departure); Row(journeyLayout, 4, "도착역", arrival); Row(journeyLayout, 5, "승차 날짜", date);
+        var times = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = true, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Margin = Padding.Empty };
         from.Width = 108; to.Width = 108; times.Controls.Add(from);
         times.Controls.Add(new Label { Text = "부터", AutoSize = true, Margin = new Padding(8, 7, 8, 0) }); times.Controls.Add(to);
         times.Controls.Add(new Label { Text = "까지 출발", AutoSize = true, Margin = new Padding(8, 7, 0, 0) });
-        Row(journeyLayout, 5, "출발 시간대", times); Row(journeyLayout, 6, "열차번호 목록", train); Row(journeyLayout, 7, "좌석 등급", grade);
-        Span(journeyLayout, new Label { Text = "예: 505,541,561 · 쉼표로 구분해 최대 20개. 비워 두어도 됩니다.\n조회 목록에서 원하는 열차들을 선택하고 조건을 확인하세요.\n입력한 번호 순서대로 확인하며, 그중 한 편만 예약합니다.", Dock = DockStyle.Fill }, 8);
+        Row(journeyLayout, 6, "출발 시간대", times); Row(journeyLayout, 7, "열차번호 목록", train); Row(journeyLayout, 8, "좌석 등급", grade);
+        Span(journeyLayout, Hint("열차번호 예: 505,541,561 · 쉼표로 최대 20개, 빈칸도 가능\n입력한 순서대로 확인하며, 선택한 열차 중 한 편만 예약합니다."), 9);
         journeyPage.Controls.Add(journeyLayout);
 
-        var telegramLayout = FieldLayout(8);
-        foreach (int height in new [] { 120, 30, 40, 40, 48, 36, 40 }) telegramLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
-        telegramLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        Span(telegramLayout, new Label { Dock = DockStyle.Fill, Text = "사용자마다 자신의 봇과 대화를 연결하세요.\n1. BotFather에서 /newbot으로 내 봇을 만듭니다.\n2. 만든 봇의 대화를 열고 /start를 보냅니다.\n3. 아래에 토큰 입력 → Chat ID 찾기 → 내 대화 선택 → 테스트\n4. 알림 사용을 체크하고 ‘저장’을 누르면 연결이 적용됩니다." }, 0);
-        var botFather = new LinkLabel { Text = "공식 BotFather 열기", AutoSize = true, LinkBehavior = LinkBehavior.HoverUnderline };
+        var telegramLayout = FieldLayout(9);
+        Span(telegramLayout, SectionHeading("예약 결과를 텔레그램으로"), 0);
+        Span(telegramLayout, Hint("1. BotFather에서 /newbot으로 본인의 봇을 만드세요.\n2. 만든 봇과 대화를 열고 /start를 보내세요.\n3. 토큰 입력 → Chat ID 찾기 → 테스트 → 알림 체크 후 저장"), 1);
+        var botFather = new LinkLabel { Text = "BotFather에서 봇 만들기 ↗", AutoSize = true, LinkBehavior = LinkBehavior.HoverUnderline, LinkColor = UiTheme.Accent, ActiveLinkColor = UiTheme.Accent, VisitedLinkColor = UiTheme.Accent };
         botFather.LinkClicked += delegate {
             if (working) return;
             try { Process.Start(new ProcessStartInfo("https://t.me/BotFather") { UseShellExecute = true }); }
             catch { SetNotice("브라우저를 열지 못했습니다. 텔레그램에서 공식 @BotFather를 직접 찾아주세요.", true); }
         };
-        Span(telegramLayout, botFather, 1); Row(telegramLayout, 2, "내 봇 토큰", token); Row(telegramLayout, 3, "내 Chat ID", chatId);
-        var telegramActions = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
+        Span(telegramLayout, botFather, 2); Row(telegramLayout, 3, "내 봇 토큰", token); Row(telegramLayout, 4, "내 Chat ID", chatId);
+        var telegramActions = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = true, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
         telegramActions.Controls.Add(findChat); telegramActions.Controls.Add(test);
-        Span(telegramLayout, telegramActions, 4); Span(telegramLayout, telegramEnabled, 5); Span(telegramLayout, disconnect, 6);
-        Span(telegramLayout, new Label { Dock = DockStyle.Fill, Text = "테스트 성공만으로 알림이 켜지거나 저장되지는 않습니다.\nChat ID 찾기는 개인 대화만 표시합니다. 그룹 ID는 직접 입력하세요.\n토큰은 현재 Windows 계정으로 암호화해 이 PC에 저장합니다.\n예약 완료 확인 후 알림이며, 결제 완료 알림은 아닙니다.", ForeColor = Color.FromArgb(68, 87, 99) }, 7);
+        Span(telegramLayout, telegramActions, 5); Span(telegramLayout, telegramEnabled, 6);
+        Span(telegramLayout, Hint("테스트 후에도 ‘설정 저장’을 눌러야 알림 사용이 적용됩니다.\n개인 대화만 찾을 수 있으며, 그룹 ID는 직접 입력하세요.\n토큰은 이 PC의 Windows 계정으로 암호화해 저장합니다.\n예약 완료 확인 알림이며 결제는 직접 진행하세요."), 7);
+        Span(telegramLayout, disconnect, 8);
         telegramPage.Controls.Add(telegramLayout);
-        var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft };
-        var cancel = new Button { Text = firstRun ? "나중에" : "취소", Width = 104, Height = 36, DialogResult = DialogResult.Cancel };
-        actions.Controls.Add(cancel); actions.Controls.Add(save);
-        notice.Padding = new Padding(5, 10, 5, 0);
-        root.Controls.Add(tabs, 0, 0); root.Controls.Add(notice, 0, 1); root.Controls.Add(actions, 0, 2);
-        Controls.Add(root); CancelButton = cancel;
+        var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, Padding = new Padding(0, 6, 0, 0) };
+        var cancel = new Button { Text = firstRun ? "나중에" : "취소", Width = 104, Height = 42, DialogResult = DialogResult.Cancel };
+        UiTheme.StyleButton(cancel); actions.Controls.Add(save); actions.Controls.Add(cancel);
+        notice.Padding = new Padding(0, 14, 0, 0);
+        root.Controls.Add(heading, 0, 0); root.Controls.Add(tabs, 0, 1); root.Controls.Add(notice, 0, 2); root.Controls.Add(actions, 0, 3);
+        Controls.Add(root); CancelButton = cancel; AcceptButton = save;
         grade.Items.AddRange(new object[] { "일반실", "특실", "우등실" });
         journeyEnabled.Checked = initial.Journey.Enabled; departure.Text = initial.Journey.DepartureStation; arrival.Text = initial.Journey.ArrivalStation;
         date.Value = Parse(initial.Journey.Date, "yyyy-MM-dd", DateTime.Today);
@@ -427,7 +432,7 @@ internal sealed class SettingsDialog : Form
             string outcome = await TelegramNotifier.SendAsync(selected, "[코레일 한 장 도우미] 텔레그램 연결 테스트입니다. 예약 완료가 확인되면 이 대화로 알립니다. 결제는 직접 진행하세요.");
             if (IsDisposed) return;
             SetWorking(false);
-            notice.ForeColor = outcome == TelegramNotifier.SuccessMessage ? Color.DarkGreen : Color.Maroon;
+            notice.ForeColor = outcome == TelegramNotifier.SuccessMessage ? Color.FromArgb(20, 113, 71) : UiTheme.Danger;
             notice.Text = outcome == TelegramNotifier.SuccessMessage ? outcome + " 내 대화에 도착했는지 확인하고 알림 사용을 체크한 뒤 ‘저장’을 누르세요." : outcome;
         };
         findChat.Click += async delegate {
@@ -444,7 +449,7 @@ internal sealed class SettingsDialog : Form
             {
                 if (choices.ShowDialog(this) == DialogResult.OK && choices.SelectedChat != null)
                 {
-                    chatId.Text = choices.SelectedChat.ChatId; notice.ForeColor = Color.FromArgb(45, 68, 84);
+                    chatId.Text = choices.SelectedChat.ChatId; notice.ForeColor = UiTheme.Muted;
                     notice.Text = "선택한 Chat ID를 입력했습니다. 테스트 알림이 내 대화에 도착하는지 확인한 뒤 저장하세요.";
                 }
                 else notice.Text = "대화 선택을 취소했습니다. Chat ID는 변경하지 않았습니다.";
@@ -464,14 +469,31 @@ internal sealed class SettingsDialog : Form
     }
     void SetNotice(string message, bool error)
     {
-        notice.ForeColor = error ? Color.Maroon : Color.FromArgb(45, 68, 84); notice.Text = message;
+        notice.ForeColor = error ? UiTheme.Danger : UiTheme.Muted; notice.Text = message;
     }
     static TableLayoutPanel FieldLayout(int rowCount)
     {
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(12), ColumnCount = 2, RowCount = rowCount, AutoScroll = true };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 135));
+        var layout = new TableLayoutPanel { Dock = DockStyle.Top, Padding = new Padding(20), ColumnCount = 2, RowCount = rowCount, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, BackColor = UiTheme.Surface };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 142));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        for (int i = 0; i < rowCount; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.SizeChanged += delegate {
+            int available = Math.Max(200, layout.ClientSize.Width - layout.Padding.Horizontal - 8);
+            foreach (Control control in layout.Controls)
+            {
+                if (!(control is Label) || layout.GetColumnSpan(control) != 2) continue;
+                if (control.MaximumSize.Width != available) control.MaximumSize = new Size(available, 0);
+            }
+        };
         return layout;
+    }
+    static Label SectionHeading(string text)
+    {
+        return new Label { Text = text, AutoSize = true, Font = new Font("맑은 고딕", 13, FontStyle.Bold), ForeColor = UiTheme.Text };
+    }
+    static Label Hint(string text)
+    {
+        return new Label { Text = text, AutoSize = true, ForeColor = UiTheme.Muted };
     }
     AppSettings ReadFields()
     {
@@ -487,11 +509,13 @@ internal sealed class SettingsDialog : Form
     }
     static void Span(TableLayoutPanel layout, Control control, int row)
     {
-        control.Margin = new Padding(3); layout.Controls.Add(control, 0, row); layout.SetColumnSpan(control, 2);
+        control.Margin = new Padding(0, 0, 0, 16);
+        if (control is Label) { control.AutoSize = true; control.Anchor = AnchorStyles.Left | AnchorStyles.Top; control.MaximumSize = new Size(600, 0); }
+        layout.Controls.Add(control, 0, row); layout.SetColumnSpan(control, 2);
     }
     static void Row(TableLayoutPanel layout, int row, string caption, Control input)
     {
-        layout.Controls.Add(new Label { Text = caption, AutoSize = true, Margin = new Padding(3, 6, 3, 0) }, 0, row);
-        input.Dock = DockStyle.Fill; layout.Controls.Add(input, 1, row);
+        layout.Controls.Add(new Label { Text = caption, AutoSize = true, ForeColor = UiTheme.Text, Margin = new Padding(0, 6, 12, 16) }, 0, row);
+        input.Dock = DockStyle.Fill; input.Margin = new Padding(0, 0, 0, 14); layout.Controls.Add(input, 1, row);
     }
 }

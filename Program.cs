@@ -18,8 +18,8 @@ using Microsoft.Win32;
 
 [assembly: AssemblyTitle("코레일 한 장 도우미 PC")]
 [assembly: AssemblyDescription("개인용 열차 예매 보조 도구 - 비공식")]
-[assembly: AssemblyVersion("0.8.4.0")]
-[assembly: AssemblyFileVersion("0.8.4.0")]
+[assembly: AssemblyVersion("0.8.5.0")]
+[assembly: AssemblyFileVersion("0.8.5.0")]
 
 internal static class Program
 {
@@ -46,7 +46,7 @@ internal static class Program
             if (!created) { MessageBox.Show("이미 실행 중입니다. 열린 코레일 도우미 창을 사용하세요.", "코레일 한 장 도우미"); return 2; }
             try
             {
-                BundleRoot = Path.Combine(DataRoot, "app-0.8.4");
+                BundleRoot = Path.Combine(DataRoot, "app-0.8.5");
                 Extract();
                 AppDomain.CurrentDomain.AssemblyResolve += delegate(object sender, ResolveEventArgs eventArgs)
                 {
@@ -129,43 +129,11 @@ internal sealed partial class MainWindow : Form
     TaskCompletionSource<bool> loadWaiter;
     public MainWindow()
     {
-        Text = "코레일 한 장 도우미 PC 0.8.4 · " + (Program.ManualDiagnostic ? "수동 진단 · 자동 기능 꺼짐" : "비공식");
+        Text = "코레일 한 장 도우미 PC 0.8.5 · " + (Program.ManualDiagnostic ? "수동 진단 · 자동 기능 꺼짐" : "비공식");
         settings = AppSettings.Load(Path.Combine(Program.DataRoot, "settings.json"));
         ClientSize = new Size(1320, 900); MinimumSize = new Size(1000, 760);
         StartPosition = FormStartPosition.CenterScreen; Font = new Font("맑은 고딕", 10);
-        BackColor = Color.FromArgb(241, 246, 249);
-        var top = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 98, Padding = new Padding(12, 8, 12, 5), WrapContents = true, AutoScroll = true, BackColor = Color.FromArgb(18, 60, 83) };
-        AddButton(top, "열차 설정", async delegate { await EditSettings(false); }).Enabled = !Program.ManualDiagnostic;
-        AddButton(top, "텔레그램 설정", async delegate { await EditSettings(true); }).Enabled = !Program.ManualDiagnostic;
-        bookingButton = AddButton(top, "선택 열차 예약 (마우스)", async delegate { await StartMouseBooking(); });
-        refreshButton = AddButton(top, "마우스 자동 조회", async delegate { await OpenMouseRefresh(); });
-        mouseContinueButton = AddButton(top, "계속", async delegate { await ResumeMouseBooking(); });
-        mouseContinueButton.Enabled = false;
-        bookingButton.Enabled = refreshButton.Enabled = !Program.ManualDiagnostic;
-        siteDiagnostics.ManualMode = Program.ManualDiagnostic;
-        AddButton(top, "예약 기록", delegate { ShowBookingHistory(); });
-        AddButton(top, "코레일 열기", delegate { Navigate("https://www.korail.com/ticket/main"); });
-        AddButton(top, "연습 화면", delegate { Navigate(LocalBase + "demo.html"); });
-        AddButton(top, "마우스 연습", delegate { Navigate(LocalBase + "card-demo.html?case=mouse-notice"); });
-        AddButton(top, "사용 안내", delegate { Navigate(LocalBase + "welcome.html"); });
-        AddButton(top, "화면 진단 저장", async delegate { await SaveDiagnostics(); });
-        AddButton(top, "브라우저 진단 저장", delegate { SaveBrowserDiagnostics(); });
-        AddButton(top, "새로고침", async delegate { await StopHelper("새로고침으로 중지했습니다."); if (ready) view.Reload(); });
-        AddButton(top, "모두 중지 (F8)", async delegate { await StopHelper("사용자가 모두 중지했습니다."); });
-        address.Dock = DockStyle.Top; address.ReadOnly = true; address.BorderStyle = BorderStyle.FixedSingle;
-        address.BackColor = Color.White; address.Height = 30; address.TabStop = false;
-        status.Dock = DockStyle.Bottom; status.Height = 46; status.Padding = new Padding(12, 8, 8, 5);
-        status.Text = "준비 중 · 마우스 이동은 계속, 조회 대기 중 직접 입력·창 전환은 일시정지합니다."; status.AutoEllipsis = true;
-        sleepStatus.Dock = DockStyle.Bottom; sleepStatus.Height = 28; sleepStatus.Padding = new Padding(12, 3, 8, 3);
-        sleepStatus.AutoEllipsis = true;
-        ShowSleepStatus(false);
-        notificationStatus.Dock = DockStyle.Bottom; notificationStatus.Height = 34; notificationStatus.Padding = new Padding(12, 5, 8, 3);
-        notificationStatus.Text = settings.Telegram.Enabled ? "텔레그램 알림 켜짐 · 예약 완료 확인 후 전송" : "텔레그램 알림 꺼짐 · ‘텔레그램 설정’에서 내 봇을 연결하세요.";
-        if (settings.LoadWarning != null) notificationStatus.Text = settings.LoadWarning;
-        if (Program.ManualDiagnostic) notificationStatus.Text = "수동 진단 모드 · 자동 예약·알림 없음 · 기존 브라우저 세션 유지";
-        notificationStatus.AutoEllipsis = true;
-        view.Dock = DockStyle.Fill; view.DefaultBackgroundColor = Color.White;
-        Controls.Add(view); Controls.Add(address); Controls.Add(top); Controls.Add(status); Controls.Add(notificationStatus); Controls.Add(sleepStatus);
+        InitializeDesktopShell();
         KeyPreview = true;
         KeyDown += async delegate(object sender, KeyEventArgs e) { if (e.KeyCode == Keys.F8) { e.Handled = true; await StopHelper("F8로 중지했습니다."); } };
         Resize += async delegate {
@@ -186,11 +154,6 @@ internal sealed partial class MainWindow : Form
             if (!closing) await Initialize();
         };
         if (Program.SelfTest) { ShowInTaskbar = false; Opacity = 0; }
-    }
-    Button AddButton(FlowLayoutPanel panel, string title, EventHandler handler)
-    {
-        var button = new Button { Text = title, AutoSize = true, Height = 34, FlatStyle = FlatStyle.Flat, BackColor = Color.White, ForeColor = Color.FromArgb(18, 60, 83), Margin = new Padding(0, 0, 9, 0), Padding = new Padding(8, 0, 8, 0) };
-        button.Click += handler; panel.Controls.Add(button); return button;
     }
     async Task EditSettings(bool openTelegram, bool firstRun = false)
     {
@@ -583,12 +546,26 @@ internal sealed partial class MainWindow : Form
         var preview = new AppSettings { Journey = new JourneySettings { Enabled = true, DepartureStation = "서울", ArrivalStation = "부산", Date = "2026-10-25", FromTime = "07:00", ToTime = "10:00", TrainNumber = "103", Grade = "일반실" } };
         foreach (bool telegram in new [] { false, true })
         using (var dialog = new SettingsDialog(preview, telegram))
-        using (var bitmap = new Bitmap(dialog.Width, dialog.Height))
         {
             dialog.Opacity = 0; dialog.Show(this); dialog.PerformLayout(); dialog.Refresh();
-            dialog.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size));
-            bitmap.Save(Path.Combine(Path.GetDirectoryName(Program.TestOutput), telegram ? "telegram-settings-preview.png" : "settings-preview.png"), System.Drawing.Imaging.ImageFormat.Png);
+            SaveDialogPreview(dialog, telegram ? "telegram-settings-preview.png" : "settings-preview.png");
+            dialog.Size = dialog.MinimumSize; dialog.PerformLayout(); dialog.Refresh();
+            SaveDialogPreview(dialog, telegram ? "telegram-settings-compact-preview.png" : "settings-compact-preview.png");
             dialog.Close();
+        }
+        using (var firstRun = new SettingsDialog(new AppSettings(), true, true))
+        {
+            firstRun.Opacity = 0; firstRun.Show(this); firstRun.PerformLayout(); firstRun.Refresh();
+            SaveDialogPreview(firstRun, "first-run-preview.png");
+            firstRun.Close();
+        }
+    }
+    void SaveDialogPreview(Form dialog, string name)
+    {
+        using (var bitmap = new Bitmap(dialog.Width, dialog.Height))
+        {
+            dialog.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size));
+            bitmap.Save(Path.Combine(Path.GetDirectoryName(Program.TestOutput), name), System.Drawing.Imaging.ImageFormat.Png);
         }
     }
     void Assert(bool pass, string name) { if (!pass) throw new Exception("FAIL: " + name); testResults.Add("PASS: " + name); }
@@ -653,6 +630,8 @@ internal sealed partial class MainWindow : Form
                             dialog.PerformLayout(); dialog.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size));
                             bitmap.Save(Path.Combine(Path.GetDirectoryName(Program.TestOutput), "refresh-settings-preview.png"), System.Drawing.Imaging.ImageFormat.Png);
                         }
+                        interval.Text = Int32.MaxValue.ToString(); jitter.Text = "1";
+                        SaveDialogPreview(dialog, "refresh-settings-max-preview.png");
                         jitter.Text = "55"; inspected = true;
                     }
                     catch (Exception ex) { dialogError = ex; }
@@ -682,6 +661,7 @@ internal sealed partial class MainWindow : Form
         {
             await RunRefreshTimingTests();
             RenderSettingsPreview();
+            await RunShellPreviewChecks();
             var testLease = new LeaseGate();
             Assert(testLease.Request("acquire", "old", true) && !testLease.Request("acquire", "new", true), "native lease: one owner");
             testLease.Request("release", "other", true);

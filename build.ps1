@@ -21,6 +21,8 @@ foreach ($assetName in $publicAssets) {
 }
 foreach ($item in $embedded.GetEnumerator()) { $argsList += '/resource:' + $item.Value + ',bundle.' + $item.Key }
 $argsList += Join-Path $buildRoot 'Program.cs'
+$argsList += Join-Path $buildRoot 'UiTheme.cs'
+$argsList += Join-Path $buildRoot 'DesktopShell.cs'
 $argsList += Join-Path $buildRoot 'Settings.cs'
 $argsList += Join-Path $buildRoot 'NotificationBridge.cs'
 $argsList += Join-Path $buildRoot 'BookingAttempt.cs'
