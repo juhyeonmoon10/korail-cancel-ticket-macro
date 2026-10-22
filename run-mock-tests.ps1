@@ -51,4 +51,10 @@ $delayArgs = $commonArgs + @(('/out:' + $delayExe), (Join-Path $sourceRoot 'Refr
 if ($LASTEXITCODE -ne 0) { throw 'Refresh delay test compilation failed.' }
 & $delayExe
 if ($LASTEXITCODE -ne 0) { throw 'Refresh delay tests failed.' }
+$inputExe = Join-Path $binRoot 'NativeInputPolicyTests.exe'
+$inputArgs = $commonArgs + @(('/out:' + $inputExe), (Join-Path $sourceRoot 'NativeMouseInput.cs'), (Join-Path $sourceRoot 'NativeInputPolicyTests.cs'))
+& $compiler @inputArgs
+if ($LASTEXITCODE -ne 0) { throw 'Native input policy test compilation failed.' }
+& $inputExe
+if ($LASTEXITCODE -ne 0) { throw 'Native input policy tests failed.' }
 Write-Output 'All C# tests passed, including a short native Windows sleep-prevention request/release. No real Telegram or Korail requests were made.'

@@ -19,6 +19,7 @@ internal static class NativeMouseInput
     const int SmCxVirtualScreen = 78, SmCyVirtualScreen = 79;
     const int WhKeyboardLl = 13, WhMouseLl = 14;
     const int WmKeyDown = 0x0100, WmSysKeyDown = 0x0104;
+    const long WmMouseMove = 0x0200;
 
     // A process-lifetime provenance tag distinguishes this helper's input from
     // user input. It never alters input cadence or conceals injected input flags.
@@ -191,6 +192,14 @@ internal static class NativeMouseInput
             : unchecked((uint)value.ToInt32()) == InputMarker.ToUInt32();
     }
 
+    internal static bool IsInterferingMouseMessage(long message)
+    {
+        // Moving the pointer alone does not change the booking. Every other
+        // mouse message, including an unknown one, still interrupts the run.
+        // Held buttons, focus and hit testing remain guarded before each input.
+        return message != WmMouseMove;
+    }
+
     static IntPtr ObserveMouse(int code, IntPtr message, IntPtr data)
     {
         if (code >= 0 && watchingInput)
@@ -199,7 +208,7 @@ internal static class NativeMouseInput
             {
                 // Read only MSLLHOOKSTRUCT.dwExtraInfo: never copy coordinates,
                 // button information, timestamps or any event history.
-                if (!HasOwnMarker(data, IntPtr.Size == 8 ? 24 : 20))
+                if (!HasOwnMarker(data, IntPtr.Size == 8 ? 24 : 20) && IsInterferingMouseMessage(message.ToInt64()))
                     Interlocked.Increment(ref foreignInputVersion);
             }
             catch { Interlocked.Increment(ref foreignInputVersion); Interlocked.Exchange(ref stopLatched, 1); }

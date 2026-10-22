@@ -35,7 +35,7 @@ internal sealed partial class MainWindow
             FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false, Font = Font })
         {
             var info = new Label { Left = 20, Top = 18, Width = 560, Height = 70,
-                Text = "같은 날짜·구간·분류의 조회 버튼을 마우스로 누릅니다.\n최대 10분 실행 · F8·직접 입력·창 전환 시 중지합니다.\n접근 제한·인증 안내가 나오면 재시도하지 않습니다." };
+                Text = "같은 날짜·구간·분류의 조회 버튼을 마우스로 누릅니다.\n최대 10분 · F8 중지 · 조회 대기 중 직접 입력은 일시정지\n창 전환은 일시정지, 차단 안내에서는 중지합니다." };
             var intervalLabel = new Label { Left = 20, Top = 105, Width = 130, Text = "조회 간격 (초)" };
             var interval = new NumericUpDown { Left = 155, Top = 100, Width = 100, Minimum = 30, Maximum = 300, Value = mouseRefreshIntervalSeconds, AccessibleName = "조회 간격" };
             var countLabel = new Label { Left = 300, Top = 105, Width = 150, Text = "추가 조회 횟수" };
@@ -176,7 +176,8 @@ internal sealed partial class MainWindow
         const double inputMargin = 64;
         if (y < inputMargin || y >= height - inputMargin)
         {
-            if (NativeMouseInput.ForeignInputVersion() != mouseLastInput) throw new InvalidOperationException("사용자 입력으로 스크롤을 취소했습니다.");
+            if (NativeMouseInput.ForeignInputVersion() != mouseLastInput) { InterruptMouseBooking("스크롤 전 직접 입력 감지"); return; }
+            if (WindowState == FormWindowState.Minimized || !NativeMouseInput.IsForeground(this)) { InterruptMouseBooking("스크롤 전 창 전환"); return; }
             if (++mouseScrollCount > 8) throw new InvalidOperationException("조회 버튼을 화면에 표시하지 못했습니다.");
             NativeMouseInput.Wheel(this, view.PointToScreen(new Point(view.ClientSize.Width / 2, view.ClientSize.Height / 2)), y < inputMargin ? 360 : -360);
             return;
@@ -199,7 +200,9 @@ internal sealed partial class MainWindow
             Math.Abs(NumberValue(point, "x") - x) > 1 || Math.Abs(NumberValue(point, "y") - y) > 1 ||
             NumberValue(point, "viewportWidth") != width || NumberValue(point, "viewportHeight") != height ||
             origin != view.PointToScreen(Point.Empty) || viewport != view.ClientSize) return;
-        if (NativeMouseInput.ForeignInputVersion() != mouseLastInput || NativeMouseInput.IsStopPressed()) throw new InvalidOperationException("입력이 감지되어 재조회를 취소했습니다.");
+        if (NativeMouseInput.IsStopPressed()) throw new InvalidOperationException("F8로 중지했습니다.");
+        if (NativeMouseInput.ForeignInputVersion() != mouseLastInput) { InterruptMouseBooking("재조회 전 직접 입력 감지"); return; }
+        if (WindowState == FormWindowState.Minimized || !NativeMouseInput.IsForeground(this)) { InterruptMouseBooking("재조회 전 창 전환"); return; }
         mouseRefreshRevision = NumberValue(fresh, "revision"); mouseRefreshBaseline = Get(fresh, "fingerprint");
         mouseRefreshSawChange = false; mouseRefreshStableKey = null; mouseRefreshPending = true;
         mouseRefreshCount++; mouseRefreshSent = DateTime.UtcNow; mouseScrollCount = 0;

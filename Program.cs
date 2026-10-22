@@ -18,8 +18,8 @@ using Microsoft.Win32;
 
 [assembly: AssemblyTitle("코레일 한 장 도우미 PC")]
 [assembly: AssemblyDescription("개인용 열차 예매 보조 도구 - 비공식")]
-[assembly: AssemblyVersion("0.8.1.0")]
-[assembly: AssemblyFileVersion("0.8.1.0")]
+[assembly: AssemblyVersion("0.8.2.0")]
+[assembly: AssemblyFileVersion("0.8.2.0")]
 
 internal static class Program
 {
@@ -46,7 +46,7 @@ internal static class Program
             if (!created) { MessageBox.Show("이미 실행 중입니다. 열린 코레일 도우미 창을 사용하세요.", "코레일 한 장 도우미"); return 2; }
             try
             {
-                BundleRoot = Path.Combine(DataRoot, "app-0.8.1");
+                BundleRoot = Path.Combine(DataRoot, "app-0.8.2");
                 Extract();
                 AppDomain.CurrentDomain.AssemblyResolve += delegate(object sender, ResolveEventArgs eventArgs)
                 {
@@ -129,7 +129,7 @@ internal sealed partial class MainWindow : Form
     TaskCompletionSource<bool> loadWaiter;
     public MainWindow()
     {
-        Text = "코레일 한 장 도우미 PC 0.8.1 · " + (Program.ManualDiagnostic ? "수동 진단 · 자동 기능 꺼짐" : "비공식");
+        Text = "코레일 한 장 도우미 PC 0.8.2 · " + (Program.ManualDiagnostic ? "수동 진단 · 자동 기능 꺼짐" : "비공식");
         settings = AppSettings.Load(Path.Combine(Program.DataRoot, "settings.json"));
         ClientSize = new Size(1320, 900); MinimumSize = new Size(1000, 760);
         StartPosition = FormStartPosition.CenterScreen; Font = new Font("맑은 고딕", 10);
@@ -139,6 +139,8 @@ internal sealed partial class MainWindow : Form
         AddButton(top, "텔레그램 설정", async delegate { await EditSettings(true); }).Enabled = !Program.ManualDiagnostic;
         bookingButton = AddButton(top, "선택 열차 예약 (마우스)", async delegate { await StartMouseBooking(); });
         refreshButton = AddButton(top, "마우스 자동 조회", async delegate { await OpenMouseRefresh(); });
+        mouseContinueButton = AddButton(top, "계속", async delegate { await ResumeMouseBooking(); });
+        mouseContinueButton.Enabled = false;
         bookingButton.Enabled = refreshButton.Enabled = !Program.ManualDiagnostic;
         siteDiagnostics.ManualMode = Program.ManualDiagnostic;
         AddButton(top, "예약 기록", delegate { ShowBookingHistory(); });
@@ -153,7 +155,7 @@ internal sealed partial class MainWindow : Form
         address.Dock = DockStyle.Top; address.ReadOnly = true; address.BorderStyle = BorderStyle.FixedSingle;
         address.BackColor = Color.White; address.Height = 30; address.TabStop = false;
         status.Dock = DockStyle.Bottom; status.Height = 46; status.Padding = new Padding(12, 8, 8, 5);
-        status.Text = "준비 중 · 창 전환·최소화·화면 잠금 시 중지됩니다."; status.AutoEllipsis = true;
+        status.Text = "준비 중 · 마우스 이동은 계속, 조회 대기 중 직접 입력·창 전환은 일시정지합니다."; status.AutoEllipsis = true;
         sleepStatus.Dock = DockStyle.Bottom; sleepStatus.Height = 28; sleepStatus.Padding = new Padding(12, 3, 8, 3);
         sleepStatus.AutoEllipsis = true;
         ShowSleepStatus(false);
@@ -167,7 +169,11 @@ internal sealed partial class MainWindow : Form
         KeyPreview = true;
         KeyDown += async delegate(object sender, KeyEventArgs e) { if (e.KeyCode == Keys.F8) { e.Handled = true; await StopHelper("F8로 중지했습니다."); } };
         Resize += async delegate {
-            if (WindowState == FormWindowState.Minimized) await StopHelper("최소화하여 중지했습니다. 창을 연 뒤 다시 시작하세요.");
+            if (WindowState == FormWindowState.Minimized)
+            {
+                if (CanPauseMouseBooking()) InterruptMouseBooking("창 최소화");
+                else await StopHelper("최소화하여 중지했습니다. 창을 연 뒤 다시 시작하세요.");
+            }
             else if (ready && !closing) activeDocument = !Program.ManualDiagnostic && !siteDiagnostics.SiteBlocked && HelperPage(view.CoreWebView2.Source);
         };
         SystemEvents.PowerModeChanged += PowerChanged;
@@ -751,6 +757,7 @@ internal sealed partial class MainWindow : Form
             Assert(view.CoreWebView2.Source.Contains("welcome.html") && !activeDocument, "navigation clears active document");
             await LoadDemo("unchanged"); await StartDemo(true); await Task.Delay(300); await WaitStopped(35000);
             Assert((await EvalString("document.getElementById('result').textContent")).Contains("0회") && (await EvalString("document.getElementById('korail-one-helper').shadowRoot.getElementById('status').textContent")).Contains("갱신"), "unconfirmed refresh: timeout without click");
+            await RunMousePauseTests();
             FinishTests(null);
         }
         catch (Exception ex) { FinishTests(ex); }

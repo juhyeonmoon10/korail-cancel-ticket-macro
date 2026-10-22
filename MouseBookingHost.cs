@@ -183,6 +183,7 @@ internal sealed partial class MainWindow
         bool wasActive = mouseBookingActive;
         if (mouseAutoRefresh) RefreshLog("stop", "count=" + mouseRefreshCount + (reason == null ? "" : ", " + reason));
         mouseBookingActive = false; mouseGeneration++;
+        mousePaused = false; mousePauseSource = null; ShowMouseContinue();
         ResetMouseRefresh();
         try { NativeMouseInput.EndInputWatch(); }
         catch { reason = "입력 감시를 정리하지 못해 기능을 중지했습니다. 프로그램을 다시 실행하세요."; }
@@ -203,8 +204,9 @@ internal sealed partial class MainWindow
         try
         {
             if (NativeMouseInput.IsStopPressed()) throw new InvalidOperationException("F8로 중지했습니다.");
-            if (WindowState == FormWindowState.Minimized || !NativeMouseInput.IsForeground(this)) throw new InvalidOperationException("창 포커스가 바뀌어 중지했습니다. 예약 결과를 직접 확인하세요.");
-            if (NativeMouseInput.ForeignInputVersion() != mouseLastInput) throw new InvalidOperationException("사용자의 마우스·키보드 입력을 감지하여 중지했습니다.");
+            if (mousePaused) { CheckMousePauseDeadline(); return; }
+            if (WindowState == FormWindowState.Minimized || !NativeMouseInput.IsForeground(this)) { InterruptMouseBooking("창 전환 또는 최소화"); return; }
+            if (NativeMouseInput.ForeignInputVersion() != mouseLastInput) { InterruptMouseBooking("클릭·스크롤 또는 키 입력 감지"); return; }
             if ((DateTime.UtcNow - mouseStarted).TotalMinutes > 10) throw new InvalidOperationException("10분 확인을 마쳤습니다. 필요한 조건으로 다시 조회하세요.");
             if (mouseRefreshOnly || mouseRefreshPending)
             {
@@ -296,7 +298,8 @@ internal sealed partial class MainWindow
                         || scrollOrigin != view.PointToScreen(Point.Empty) || scrollViewport != view.ClientSize) return;
                     if ((DateTime.UtcNow - mousePhaseStarted).TotalSeconds > 30) throw new InvalidOperationException("30초 확인 기한이 지나 안내 스크롤을 중지했습니다. 공식 예약 결과를 직접 확인하세요.");
                 }
-                if (NativeMouseInput.ForeignInputVersion() != mouseLastInput) throw new InvalidOperationException("입력이 감지되어 스크롤을 취소했습니다.");
+                if (NativeMouseInput.ForeignInputVersion() != mouseLastInput) { InterruptMouseBooking("스크롤 전 직접 입력 감지"); return; }
+                if (WindowState == FormWindowState.Minimized || !NativeMouseInput.IsForeground(this)) { InterruptMouseBooking("스크롤 전 창 전환"); return; }
                 if (++mouseScrollCount > 8) throw new InvalidOperationException("버튼을 화면에 표시하지 못했습니다.");
                 Point center = view.PointToScreen(new Point(view.ClientSize.Width / 2, view.ClientSize.Height / 2));
                 if (kind == "receipt-notice") siteDiagnostics.AddAction("native-receipt-scroll");
@@ -314,7 +317,8 @@ internal sealed partial class MainWindow
                 return;
             if (kind == "seat" && BookingSelection.MatchSelected(ObjectValue(fresh, "selectedTarget"), mouseTargets).Key != candidate.Key)
                 return;
-            if (NativeMouseInput.ForeignInputVersion() != mouseLastInput) throw new InvalidOperationException("입력이 감지되어 클릭을 취소했습니다.");
+            if (NativeMouseInput.ForeignInputVersion() != mouseLastInput) { InterruptMouseBooking("클릭 전 직접 입력 감지"); return; }
+            if (WindowState == FormWindowState.Minimized || !NativeMouseInput.IsForeground(this)) { InterruptMouseBooking("클릭 전 창 전환"); return; }
             if (mousePhase != "select" && (DateTime.UtcNow - mousePhaseStarted).TotalSeconds > 30) throw new InvalidOperationException("30초 확인 기한이 지나 추가 입력을 중지했습니다. 공식 예약 결과를 직접 확인하세요.");
             var screen = view.PointToScreen(new Point((int)Math.Round(x * view.ClientSize.Width / width), (int)Math.Round(y * view.ClientSize.Height / height)));
             if (kind == "reserve")
@@ -338,7 +342,7 @@ internal sealed partial class MainWindow
             await Task.Delay(400);
         }
         catch (Exception ex) { if (run == mouseGeneration) StopMouseBooking(ex.Message); }
-        finally { mouseBookingBusy = false; }
+        finally { mouseBookingBusy = false; ShowMouseContinue(); }
     }
 
     void MouseScriptDialog(object sender, CoreWebView2ScriptDialogOpeningEventArgs e)
