@@ -1,0 +1,10 @@
+<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>코레일 도우미 · 동작 연습</title>
+<style>body{font:16px/1.7 system-ui,'Malgun Gothic',sans-serif;background:#f0f5f8;color:#183b50;margin:40px;max-width:960px}h1{font-size:28px;margin-bottom:6px}p{max-width:690px}table{border-collapse:collapse;background:#fff;width:100%;margin:20px 0}td,th{padding:14px;border-bottom:1px solid #d7e2e9;text-align:center}button,select,input{font:inherit;padding:7px;border:1px solid #9ab4c3;border-radius:5px;background:#fff}button{cursor:pointer;color:#066e68}label{display:inline-block;margin:5px}input{width:130px}small{color:#587080}#notice{color:#aa3015}#result{background:#d7ebe8;padding:12px}code{background:#e2e9ee;padding:3px}</style>
+<h1>한 장 도우미, 먼저 연습해 보세요</h1>
+<p>실제 코레일과 연결되지 않는 모의 화면입니다. 오른쪽 도우미에서 조회 버튼을 지정하고 <b>열차 목록 읽기</b>를 누른 뒤, 원하는 열차와 좌석 등급을 선택하세요. KTX 101 일반실은 조회 후 예약 버튼이 나타나고, KTX 103은 처음부터 예매할 수 있습니다. 이 화면에서만 조회 대기 시간이 약 1초로 줄어듭니다.</p>
+<label>출발 <input id="from" value="서울" disabled></label><label>도착 <input id="to" value="부산" disabled></label><label>날짜 <input id="date" value="2026-10-25" disabled></label><label>인원 <input id="people" value="성인 1명" disabled></label>
+<div><label>연습 상황 <select id="scenario"><option value="available">좌석 발견</option><option value="reorder">열차 순서 변경 후 발견</option><option value="waiting">대기 신청만 표시</option><option value="disabled">사용 불가 버튼</option><option value="error">안내창 발생</option><option value="unchanged">응답 없음</option><option value="condition">조회 조건 변경</option><option value="unstable">잠깐 표시됐다 사라지는 좌석</option></select></label> <button id="query">조회하기</button> <button id="reset">연습 초기화</button></div>
+<table><thead><tr><th>열차</th><th>출발</th><th>도착</th><th>일반실</th><th>특실</th></tr></thead><tbody id="trains"></tbody></table>
+<p id="notice" role="alert"></p><p id="result">예매 버튼 클릭: 0회</p>
+<p><small>PC 프로그램에서 열차 선택과 알림·1회 클릭을 연습합니다. 연습 상황을 먼저 고르고 도우미를 시작하세요. 실제 결제·좌석 예약·텔레그램 전송은 발생하지 않습니다.</small></p>
+<script src="demo.js"></script></html>

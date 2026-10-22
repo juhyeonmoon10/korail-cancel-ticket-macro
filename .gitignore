@@ -1,0 +1,41 @@
+# Dependency cache and generated release files
+/packages/
+/node_modules/
+/dist/
+/release/
+*.exe
+*.dll
+*.pdb
+*.zip
+*.nupkg
+
+# Local tests and browser profiles
+/tests/bin/
+/tests/data/
+/test-results/
+**/browser/
+**/profile/
+**/diagnostics/
+**/EBWebView/
+**/app-*/
+
+# Per-user configuration and credentials
+**/settings.json
+**/settings.json.*
+**/booking-attempts.json*
+**/demo-booking-attempts.json*
+.env
+.env.*
+*.key
+*.pem
+*.log
+*.initialized
+*.lock
+.vs/
+.vscode/
+Thumbs.db
+Desktop.ini
+
+# Local investigation history and obsolete setup example (not public docs)
+/docs/EXECUTION-DIAGNOSTIC.txt
+/docs/telegram-settings.png
