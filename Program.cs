@@ -18,8 +18,8 @@ using Microsoft.Win32;
 
 [assembly: AssemblyTitle("코레일 한 장 도우미 PC")]
 [assembly: AssemblyDescription("개인용 열차 예매 보조 도구 - 비공식")]
-[assembly: AssemblyVersion("0.8.0.0")]
-[assembly: AssemblyFileVersion("0.8.0.0")]
+[assembly: AssemblyVersion("0.8.1.0")]
+[assembly: AssemblyFileVersion("0.8.1.0")]
 
 internal static class Program
 {
@@ -46,7 +46,7 @@ internal static class Program
             if (!created) { MessageBox.Show("이미 실행 중입니다. 열린 코레일 도우미 창을 사용하세요.", "코레일 한 장 도우미"); return 2; }
             try
             {
-                BundleRoot = Path.Combine(DataRoot, "app-0.8.0");
+                BundleRoot = Path.Combine(DataRoot, "app-0.8.1");
                 Extract();
                 AppDomain.CurrentDomain.AssemblyResolve += delegate(object sender, ResolveEventArgs eventArgs)
                 {
@@ -129,7 +129,7 @@ internal sealed partial class MainWindow : Form
     TaskCompletionSource<bool> loadWaiter;
     public MainWindow()
     {
-        Text = "코레일 한 장 도우미 PC 0.8.0 · " + (Program.ManualDiagnostic ? "수동 진단 · 자동 기능 꺼짐" : "비공식");
+        Text = "코레일 한 장 도우미 PC 0.8.1 · " + (Program.ManualDiagnostic ? "수동 진단 · 자동 기능 꺼짐" : "비공식");
         settings = AppSettings.Load(Path.Combine(Program.DataRoot, "settings.json"));
         ClientSize = new Size(1320, 900); MinimumSize = new Size(1000, 760);
         StartPosition = FormStartPosition.CenterScreen; Font = new Font("맑은 고딕", 10);
@@ -580,10 +580,73 @@ internal sealed partial class MainWindow : Form
         }
     }
     void Assert(bool pass, string name) { if (!pass) throw new Exception("FAIL: " + name); testResults.Add("PASS: " + name); }
+    async Task RunRefreshTimingTests()
+    {
+        if (!Program.SelfTest) throw new InvalidOperationException("로컬 모의 검사 전용입니다.");
+        await LoadDemo("available");
+        int savedInterval = mouseRefreshIntervalSeconds, savedJitter = mouseRefreshJitterPercent;
+        DateTime savedNext = mouseRefreshNext;
+        try
+        {
+            DateTime now = new DateTime(2026, 10, 23, 0, 0, 0, DateTimeKind.Utc);
+            mouseRefreshIntervalSeconds = 60; mouseRefreshJitterPercent = 0;
+            ScheduleNextMouseRefresh(now);
+            Assert(mouseRefreshNext == now.AddSeconds(60), "refresh: zero jitter keeps the fixed deadline");
+            mouseRefreshJitterPercent = 20;
+            bool bounded = true;
+            for (int i = 0; i < 10; i++)
+            {
+                ScheduleNextMouseRefresh(now);
+                bounded &= mouseRefreshNext >= now.AddSeconds(48) && mouseRefreshNext <= now.AddSeconds(72);
+            }
+            Assert(bounded, "refresh: host schedules sampled deadlines in the configured range");
+            DateTime chosen = mouseRefreshNext;
+            await Task.Delay(30);
+            Assert(mouseRefreshNext == chosen, "refresh: elapsed waiting does not replace the chosen deadline");
+
+            Exception dialogError = null; bool inspected = false;
+            using (var timer = new System.Windows.Forms.Timer { Interval = 50 })
+            {
+                timer.Tick += delegate {
+                    var dialog = Application.OpenForms.Cast<Form>().FirstOrDefault(form => form.Text == "마우스 자동 조회");
+                    if (dialog == null) return;
+                    timer.Stop();
+                    try
+                    {
+                        dialog.Opacity = 0;
+                        var interval = dialog.Controls.OfType<NumericUpDown>().Single(control => control.AccessibleName == "조회 간격");
+                        var jitter = dialog.Controls.OfType<NumericUpDown>().Single(control => control.AccessibleName == "랜덤 지연 비율");
+                        var range = dialog.Controls.OfType<Label>().Single(control => control.AccessibleName == "실제 대기 범위");
+                        interval.Value = 60; jitter.Value = 20;
+                        Assert(range.Text == "실제 대기: 48~72초", "refresh dialog: interval and percent update the displayed range");
+                        interval.Value = 30;
+                        Assert(range.Text == "실제 대기: 30~36초", "refresh dialog: minimum interval remains thirty seconds");
+                        interval.Value = 300;
+                        Assert(range.Text == "실제 대기: 240~300초", "refresh dialog: maximum interval remains three hundred seconds");
+                        interval.Value = 60;
+                        using (var bitmap = new Bitmap(dialog.Width, dialog.Height))
+                        {
+                            dialog.PerformLayout(); dialog.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size));
+                            bitmap.Save(Path.Combine(Path.GetDirectoryName(Program.TestOutput), "refresh-settings-preview.png"), System.Drawing.Imaging.ImageFormat.Png);
+                        }
+                        jitter.Value = 55; inspected = true;
+                    }
+                    catch (Exception ex) { dialogError = ex; }
+                    finally { dialog.DialogResult = DialogResult.Cancel; dialog.Close(); }
+                };
+                timer.Start();
+                await OpenMouseRefresh();
+            }
+            if (dialogError != null) throw dialogError;
+            Assert(inspected && mouseRefreshJitterPercent == 20 && !mouseBookingActive, "refresh dialog: cancel neither changes saved options nor starts input");
+        }
+        finally { mouseRefreshIntervalSeconds = savedInterval; mouseRefreshJitterPercent = savedJitter; mouseRefreshNext = savedNext; }
+    }
     async Task RunTests()
     {
         try
         {
+            await RunRefreshTimingTests();
             RenderSettingsPreview();
             var testLease = new LeaseGate();
             Assert(testLease.Request("acquire", "old", true) && !testLease.Request("acquire", "new", true), "native lease: one owner");
@@ -675,10 +738,15 @@ internal sealed partial class MainWindow : Form
             await LoadDemo("available"); await StartDemo(true); await StopHelper("수동 중지 시험"); await Task.Delay(2200);
             Assert((await EvalString("document.getElementById('result').textContent")).Contains("0회"), "manual native stop: no pending click");
             await LoadDemo("available"); await StartDemo(true); WindowState = FormWindowState.Minimized; await Task.Delay(2200); WindowState = FormWindowState.Normal;
+            // WebView's visibility notification can arrive after the native
+            // window restore. Wait for that event before testing a new start.
+            DateTime visibleDeadline = DateTime.UtcNow.AddSeconds(3);
+            while (DateTime.UtcNow < visibleDeadline && !await EvalBool("!document.hidden")) await Task.Delay(50);
+            Assert(await EvalBool("!document.hidden"), "restore: WebView becomes visible before an explicit restart");
             Assert((await EvalString("document.getElementById('result').textContent")).Contains("0회"), "minimize: no pending click");
             Assert(activeDocument && !(await EvalBool("window.KorailDesktopHelper.snapshot().running")), "restore: allows explicit restart without auto-resuming");
             await StartDemo(true); await Task.Delay(300); await WaitStopped(10000);
-            Assert((await EvalString("document.getElementById('result').textContent")).Contains("1회"), "restore: explicit restart works");
+            Assert((await EvalString("document.getElementById('result').textContent")).Contains("1회"), "restore: explicit restart works / " + await EvalString("window.KorailDesktopHelper.snapshot().status"));
             await LoadDemo("available"); await StartDemo(true); Navigate(LocalBase + "welcome.html"); await Task.Delay(1800);
             Assert(view.CoreWebView2.Source.Contains("welcome.html") && !activeDocument, "navigation clears active document");
             await LoadDemo("unchanged"); await StartDemo(true); await Task.Delay(300); await WaitStopped(35000);

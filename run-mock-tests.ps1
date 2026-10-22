@@ -45,4 +45,10 @@ $sleepArgs = $commonArgs + @(('/out:' + $sleepExe), (Join-Path $sourceRoot 'Slee
 if ($LASTEXITCODE -ne 0) { throw 'Sleep prevention test compilation failed.' }
 & $sleepExe
 if ($LASTEXITCODE -ne 0) { throw 'Sleep prevention tests failed.' }
+$delayExe = Join-Path $binRoot 'RefreshDelayPolicyTests.exe'
+$delayArgs = $commonArgs + @(('/out:' + $delayExe), (Join-Path $sourceRoot 'RefreshDelayPolicy.cs'), (Join-Path $sourceRoot 'RefreshDelayPolicyTests.cs'))
+& $compiler @delayArgs
+if ($LASTEXITCODE -ne 0) { throw 'Refresh delay test compilation failed.' }
+& $delayExe
+if ($LASTEXITCODE -ne 0) { throw 'Refresh delay tests failed.' }
 Write-Output 'All C# tests passed, including a short native Windows sleep-prevention request/release. No real Telegram or Korail requests were made.'

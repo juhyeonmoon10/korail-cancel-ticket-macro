@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Globalization;
 using System.IO;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -10,6 +11,8 @@ internal sealed partial class MainWindow
     bool mouseAutoRefresh, mouseRefreshOnly, mouseRefreshPending, mouseRefreshSawChange;
     bool mouseRefreshSiteBlocked;
     int mouseRefreshIntervalSeconds = 60, mouseRefreshLimit = 10, mouseRefreshCount;
+    int mouseRefreshJitterPercent;
+    readonly Random mouseRefreshRandom = new Random();
     string mouseRefreshQuery, mouseRefreshBaseline, mouseRefreshStableKey;
     double mouseRefreshRevision;
     DateTime mouseRefreshNext, mouseRefreshSent, mouseRefreshStableSince;
@@ -28,26 +31,43 @@ internal sealed partial class MainWindow
         int run = mouseGeneration;
         await stopping;
         if (run != mouseGeneration || closing) return;
-        using (var dialog = new Form { Text = "마우스 자동 조회", ClientSize = new Size(600, 310), StartPosition = FormStartPosition.CenterParent,
+        using (var dialog = new Form { Text = "마우스 자동 조회", ClientSize = new Size(600, 410), StartPosition = FormStartPosition.CenterParent,
             FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false, Font = Font })
         {
             var info = new Label { Left = 20, Top = 18, Width = 560, Height = 70,
-                Text = "직접 조회한 날짜·구간·분류를 유지하며 마우스로 조회 버튼을 누릅니다.\n한 번 시작하면 최대 10분 동안 실행합니다. F8·사용자 입력·창 전환 시 중지합니다.\n접근 제한이나 인증 안내가 나오면 재시도하지 않습니다." };
+                Text = "같은 날짜·구간·분류의 조회 버튼을 마우스로 누릅니다.\n최대 10분 실행 · F8·직접 입력·창 전환 시 중지합니다.\n접근 제한·인증 안내가 나오면 재시도하지 않습니다." };
             var intervalLabel = new Label { Left = 20, Top = 105, Width = 130, Text = "조회 간격 (초)" };
-            var interval = new NumericUpDown { Left = 155, Top = 100, Width = 100, Minimum = 30, Maximum = 300, Value = mouseRefreshIntervalSeconds };
-            var countLabel = new Label { Left = 300, Top = 105, Width = 150, Text = "최대 추가 조회 횟수" };
+            var interval = new NumericUpDown { Left = 155, Top = 100, Width = 100, Minimum = 30, Maximum = 300, Value = mouseRefreshIntervalSeconds, AccessibleName = "조회 간격" };
+            var countLabel = new Label { Left = 300, Top = 105, Width = 150, Text = "추가 조회 횟수" };
             var count = new NumericUpDown { Left = 460, Top = 100, Width = 100, Minimum = 1, Maximum = 20, Value = mouseRefreshLimit };
-            var book = new CheckBox { Left = 20, Top = 157, Width = 560, Height = 32, Text = "미리 선택한 열차의 좌석이 나오면 예매까지 진행 (결제 제외)" };
-            var note = new Label { Left = 20, Top = 195, Width = 560, Height = 45, Text = "체크하지 않으면 조회만 합니다. 예매까지 진행하려면 도우미에서 열차·등급을\n선택하고 확인란을 체크한 뒤 텔레그램 설정도 완료해 주세요." };
-            var start = new Button { Left = 365, Top = 257, Width = 100, Height = 35, Text = "시작", DialogResult = DialogResult.OK };
-            var cancel = new Button { Left = 475, Top = 257, Width = 100, Height = 35, Text = "취소", DialogResult = DialogResult.Cancel };
-            dialog.Controls.AddRange(new Control[] { info, intervalLabel, interval, countLabel, count, book, note, start, cancel });
+            var jitterLabel = new Label { Left = 20, Top = 155, Width = 130, Text = "랜덤 지연 (±%)" };
+            var jitter = new NumericUpDown { Left = 155, Top = 150, Width = 100, Minimum = 0, Maximum = 100, Value = mouseRefreshJitterPercent, AccessibleName = "랜덤 지연 비율" };
+            var range = new Label { Left = 275, Top = 155, Width = 305, Height = 28, AccessibleName = "실제 대기 범위" };
+            Action showRange = delegate {
+                var policy = new RefreshDelayPolicy((int)interval.Value, (int)jitter.Value);
+                range.Text = "실제 대기: " + policy.MinimumSeconds.ToString("0.##", CultureInfo.InvariantCulture) + "~" + policy.MaximumSeconds.ToString("0.##", CultureInfo.InvariantCulture) + "초";
+            };
+            interval.ValueChanged += delegate { showRange(); }; jitter.ValueChanged += delegate { showRange(); }; showRange();
+            var delayNote = new Label { Left = 20, Top = 190, Width = 560, Height = 44, Text = "0%는 고정 간격 · 첫 조회와 갱신 후 매번 대기를 정합니다.\n매크로 감지나 이용 제한을 막는다는 보장은 없습니다." };
+            var book = new CheckBox { Left = 20, Top = 240, Width = 560, Height = 32, Text = "미리 선택한 열차의 좌석이 나오면 예매까지 진행 (결제 제외)" };
+            var note = new Label { Left = 20, Top = 278, Width = 560, Height = 45, Text = "체크하지 않으면 조회만 합니다.\n예매하려면 열차·등급·확인란과 텔레그램 설정을 완료하세요." };
+            var start = new Button { Left = 365, Top = 357, Width = 100, Height = 35, Text = "시작", DialogResult = DialogResult.OK };
+            var cancel = new Button { Left = 475, Top = 357, Width = 100, Height = 35, Text = "취소", DialogResult = DialogResult.Cancel };
+            dialog.Controls.AddRange(new Control[] { info, intervalLabel, interval, countLabel, count, jitterLabel, jitter, range, delayNote, book, note, start, cancel });
             dialog.AcceptButton = start; dialog.CancelButton = cancel;
             if (dialog.ShowDialog(this) != DialogResult.OK) return;
-            mouseRefreshIntervalSeconds = (int)interval.Value; mouseRefreshLimit = (int)count.Value;
+            mouseRefreshIntervalSeconds = (int)interval.Value; mouseRefreshLimit = (int)count.Value; mouseRefreshJitterPercent = (int)jitter.Value;
             if (book.Checked) await StartMouseBooking(true);
             else await StartMouseRefreshOnly();
         }
+    }
+
+    void ScheduleNextMouseRefresh(DateTime now)
+    {
+        // Draw only when a new wait begins, never on a timer tick or a retry.
+        var delay = new RefreshDelayPolicy(mouseRefreshIntervalSeconds, mouseRefreshJitterPercent).Sample(mouseRefreshRandom.NextDouble());
+        mouseRefreshNext = now.Add(delay);
+        RefreshLog("wait", "seconds=" + delay.TotalSeconds.ToString("0.###", CultureInfo.InvariantCulture));
     }
 
     async Task<Dictionary<string, object>> ReadMouseRefresh(string expectedQuery)
@@ -71,7 +91,7 @@ internal sealed partial class MainWindow
     async Task<bool> PrepareMouseRefresh(bool only, int run)
     {
         if (mouseRefreshSiteBlocked) throw new InvalidOperationException("이 실행에서 코레일 자동화 차단이 확인되었습니다. 자동 조회를 다시 시작하지 않습니다.");
-        if (mouseRefreshIntervalSeconds < 30 || mouseRefreshIntervalSeconds > 300 || mouseRefreshLimit < 1 || mouseRefreshLimit > 20)
+        if (mouseRefreshIntervalSeconds < 30 || mouseRefreshIntervalSeconds > 300 || mouseRefreshJitterPercent < 0 || mouseRefreshJitterPercent > 100 || mouseRefreshLimit < 1 || mouseRefreshLimit > 20)
             throw new InvalidOperationException("조회 간격과 횟수가 허용 범위를 벗어났습니다.");
         var plan = await ReadMouseRefresh(null);
         if (run != mouseGeneration || closing) return false;
@@ -80,8 +100,8 @@ internal sealed partial class MainWindow
         mouseRefreshQuery = Get(plan, "queryFingerprint");
         if (String.IsNullOrEmpty(mouseRefreshQuery)) throw new InvalidOperationException("조회 조건을 고정하지 못했습니다.");
         mouseAutoRefresh = true; mouseRefreshOnly = only; mouseRefreshPending = false; mouseRefreshCount = 0;
-        mouseRefreshNext = DateTime.UtcNow.AddSeconds(mouseRefreshIntervalSeconds);
-        RefreshLog("start", "interval=" + mouseRefreshIntervalSeconds + ", limit=" + mouseRefreshLimit + ", queryOnly=" + only);
+        RefreshLog("start", "interval=" + mouseRefreshIntervalSeconds + ", jitterPercent=" + mouseRefreshJitterPercent + ", limit=" + mouseRefreshLimit + ", queryOnly=" + only);
+        ScheduleNextMouseRefresh(DateTime.UtcNow);
         return true;
     }
 
@@ -106,7 +126,7 @@ internal sealed partial class MainWindow
             if (!AutomationAvailable()) return;
             siteDiagnostics.AddAction("start");
             StartMouseLoop();
-            status.Text = "조회만 진행 · " + mouseRefreshIntervalSeconds + "초 뒤 첫 마우스 조회 · F8로 중지";
+            status.Text = "조회만 진행 · " + Math.Max(0, Math.Ceiling((mouseRefreshNext - DateTime.UtcNow).TotalSeconds)) + "초 뒤 첫 마우스 조회 · F8로 중지";
         }
         catch (Exception ex) { if (run == mouseGeneration) StopMouseBooking("자동 조회 시작 실패: " + ex.Message); }
     }
@@ -133,7 +153,8 @@ internal sealed partial class MainWindow
             string key = revision.ToString(System.Globalization.CultureInfo.InvariantCulture) + "|" + fingerprint;
             if (mouseRefreshStableKey != key) { mouseRefreshStableKey = key; mouseRefreshStableSince = now; return; }
             if ((now - mouseRefreshStableSince).TotalMilliseconds < 750) return;
-            mouseRefreshPending = false; mouseScrollCount = 0; mouseRefreshNext = now.AddSeconds(mouseRefreshIntervalSeconds);
+            mouseRefreshPending = false; mouseScrollCount = 0;
+            if (mouseRefreshCount < mouseRefreshLimit) ScheduleNextMouseRefresh(now);
             RefreshLog("result", "count=" + mouseRefreshCount + ", rows=" + Get(plan, "count"));
             status.Text = "마우스 재조회 " + mouseRefreshCount + "/" + mouseRefreshLimit + "회 결과 갱신 확인";
             if (mouseRefreshOnly && mouseRefreshCount >= mouseRefreshLimit) StopMouseBooking(status.Text + " · 완료");
