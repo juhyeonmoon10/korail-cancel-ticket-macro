@@ -20,7 +20,7 @@ internal sealed partial class MainWindow
         var sidebar = new Panel { Dock = DockStyle.Fill, BackColor = UiTheme.Surface, Margin = Padding.Empty, Padding = new Padding(16, 20, 16, 16) };
         var brand = new Panel { Dock = DockStyle.Top, Height = 100 };
         brand.Controls.Add(new Label { Text = "한 장 도우미", Font = new Font(Font.FontFamily, 16, FontStyle.Bold), ForeColor = UiTheme.Text, AutoSize = true, Location = new Point(0, 4) });
-        brand.Controls.Add(new Label { Text = "KORAIL HELPER  /  0.11.0", Font = new Font(Font.FontFamily, 8), ForeColor = UiTheme.Muted, AutoSize = true, Location = new Point(2, 48) });
+        brand.Controls.Add(new Label { Text = "KORAIL HELPER  /  0.11.1", Font = new Font(Font.FontFamily, 8), ForeColor = UiTheme.Muted, AutoSize = true, Location = new Point(2, 48) });
         var nav = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, Padding = Padding.Empty };
         AddNavButton(nav, "코레일 열기", delegate { Navigate("https://www.korail.com/ticket/main"); });
         AddNavButton(nav, "예약 관리", async delegate { await OpenBookingQueue(); }).Enabled = !Program.ManualDiagnostic;

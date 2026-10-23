@@ -163,9 +163,12 @@ internal sealed partial class MainWindow
             await WheelAutomation(y < 64 ? 480 : -480, run);
             return true;
         }
+        await PreparePointerAutomation(x, y, width, height, run);
+        if (run != mouseGeneration || !mouseBookingActive) return true;
         Point origin = view.PointToScreen(Point.Empty); Size viewport = view.ClientSize;
         var fresh = await ReadMouseMore();
         if (run != mouseGeneration || !mouseBookingActive) return true;
+        CheckMouseMoreDeadline();
         CheckMorePlan(fresh);
         var point = ObjectValue(fresh, "action");
         if (Get(fresh, "state") != "ready" || point == null || Get(point, "kind") != "more" || Get(point, "id") != Get(action, "id") ||

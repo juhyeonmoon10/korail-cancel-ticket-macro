@@ -76,11 +76,21 @@ if ($LASTEXITCODE -ne 0) { throw 'Queue query progress test compilation failed.'
 & $progressExe
 if ($LASTEXITCODE -ne 0) { throw 'Queue query progress tests failed.' }
 $inputExe = Join-Path $binRoot 'NativeInputPolicyTests.exe'
-$inputArgs = $commonArgs + @(('/out:' + $inputExe), (Join-Path $sourceRoot 'NativeMouseInput.cs'), (Join-Path $sourceRoot 'NativeInputPolicyTests.cs'))
+$inputArgs = $commonArgs + @(('/out:' + $inputExe), (Join-Path $sourceRoot 'NativeMouseInput.cs'), (Join-Path $sourceRoot 'CursorMotionPlan.cs'), (Join-Path $sourceRoot 'CursorMotionRunner.cs'), (Join-Path $sourceRoot 'NativeInputPolicyTests.cs'))
 & $compiler @inputArgs
 if ($LASTEXITCODE -ne 0) { throw 'Native input policy test compilation failed.' }
 & $inputExe
 if ($LASTEXITCODE -ne 0) { throw 'Native input policy tests failed.' }
+$motionExe = Join-Path $binRoot 'CursorMotionPlanTests.exe'
+& $compiler @commonArgs ('/out:' + $motionExe) (Join-Path $sourceRoot 'CursorMotionPlan.cs') (Join-Path $sourceRoot 'CursorMotionPlanTests.cs')
+if ($LASTEXITCODE -ne 0) { throw 'Cursor motion plan test compilation failed.' }
+& $motionExe
+if ($LASTEXITCODE -ne 0) { throw 'Cursor motion plan tests failed.' }
+$motionRunnerExe = Join-Path $binRoot 'CursorMotionRunnerTests.exe'
+& $compiler @commonArgs ('/out:' + $motionRunnerExe) (Join-Path $sourceRoot 'CursorMotionPlan.cs') (Join-Path $sourceRoot 'CursorMotionRunner.cs') (Join-Path $sourceRoot 'CursorMotionRunnerTests.cs')
+if ($LASTEXITCODE -ne 0) { throw 'Cursor motion runner test compilation failed.' }
+& $motionRunnerExe
+if ($LASTEXITCODE -ne 0) { throw 'Cursor motion runner tests failed.' }
 $pageInputExe = Join-Path $binRoot 'PageInputDispatcherTests.exe'
 $pageInputArgs = $commonArgs + @(('/out:' + $pageInputExe), (Join-Path $sourceRoot 'PageInputDispatcher.cs'), (Join-Path $sourceRoot 'PageInputDispatcherTests.cs'))
 & $compiler @pageInputArgs

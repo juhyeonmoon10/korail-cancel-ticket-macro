@@ -39,6 +39,7 @@ internal sealed partial class MainWindow
 
     Action InputValidation(int run, bool queued, bool mode, int page, string source, Size viewport, uint input)
     {
+        Point origin = view.PointToScreen(Point.Empty);
         return delegate
         {
             if (mode != BackgroundInputEnabled || !InputWindowReady() || !AutomationAvailable() || pendingPageNotice != null)
@@ -53,10 +54,28 @@ internal sealed partial class MainWindow
             if (NativeMouseInput.IsStopPressed()) throw new OperationCanceledException("F8로 중지했습니다.");
             if (NativeMouseInput.ForeignInputVersion() != input)
                 throw new OperationCanceledException("도우미 직접 입력이 감지돼 중지했습니다.");
-            if (MouseDocumentChanged(page, source) || viewport != view.ClientSize ||
+            if (MouseDocumentChanged(page, source) || viewport != view.ClientSize || origin != view.PointToScreen(Point.Empty) ||
                 !(queued ? OfficialTicketSource(source) : MouseAllowedSource(source)))
                 throw new InvalidOperationException("입력 직전 페이지나 브라우저 크기가 바뀌었습니다.");
         };
+    }
+
+    // Move before the caller's final DOM read and submission bookkeeping. The
+    // final click must not await a trajectory after those checks have completed.
+    async Task PreparePointerAutomation(double x, double y, double width, double height, int run, bool queued = false)
+    {
+        if (BackgroundInputEnabled) return;
+        if (automationInputBusy) throw new InvalidOperationException("이전 입력이 완료될 때까지 다시 시작할 수 없습니다.");
+        automationInputBusy = true;
+        try
+        {
+            var validate = InputValidation(run, queued, false, navigation, view.CoreWebView2.Source, view.ClientSize,
+                queued ? queueInputVersion : mouseLastInput);
+            validate();
+            Point target = view.PointToScreen(new Point((int)Math.Round(x * view.ClientSize.Width / width), (int)Math.Round(y * view.ClientSize.Height / height)));
+            await NativeMouseInput.MoveAsync(this, target, validate);
+        }
+        finally { automationInputBusy = false; }
     }
 
     async Task ClickAutomation(double x, double y, double width, double height, int run, bool queued = false)
@@ -79,7 +98,7 @@ internal sealed partial class MainWindow
         finally { automationInputBusy = false; }
     }
 
-    async Task WheelAutomation(int delta, int run, bool queued = false)
+    async Task WheelAutomation(int delta, int run, bool queued = false, Func<Task> recheck = null)
     {
         if (automationInputBusy) throw new InvalidOperationException("이전 입력이 완료될 때까지 다시 시작할 수 없습니다.");
         automationInputBusy = true;
@@ -96,10 +115,19 @@ internal sealed partial class MainWindow
             if (dimensions == null || !dimensions.ContainsKey("hidden") || !Object.Equals(dimensions["hidden"], false))
                 throw new InvalidOperationException("브라우저 화면이 숨겨져 스크롤을 중지했습니다.");
             double width = NumberValue(dimensions, "width"), height = NumberValue(dimensions, "height");
+            if (recheck != null) await recheck();
+            validate();
             var input = new PageInputDispatcher(view.CoreWebView2.CallDevToolsProtocolMethodAsync, validate);
             await input.WheelAsync(width / 2, height / 2, width, height, delta);
         }
-        else NativeMouseInput.Wheel(this, view.PointToScreen(new Point(view.ClientSize.Width / 2, view.ClientSize.Height / 2)), delta);
+        else
+        {
+            Point target = view.PointToScreen(new Point(view.ClientSize.Width / 2, view.ClientSize.Height / 2));
+            await NativeMouseInput.MoveAsync(this, target, validate);
+            if (recheck != null) await recheck();
+            validate();
+            NativeMouseInput.Wheel(this, target, delta);
+        }
         }
         finally { automationInputBusy = false; }
     }

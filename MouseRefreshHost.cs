@@ -208,6 +208,8 @@ internal sealed partial class MainWindow
             await WheelAutomation(y < inputMargin ? 360 : -360, run);
             return;
         }
+        await PreparePointerAutomation(x, y, width, height, run);
+        if (run != mouseGeneration || !mouseBookingActive) return;
         Point origin = view.PointToScreen(Point.Empty); Size viewport = view.ClientSize;
         if (!mouseRefreshOnly)
         {

@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Drawing;
 using System.Runtime.InteropServices;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 // Foreground-only input for a user-started, single reservation attempt.
@@ -32,7 +34,8 @@ internal static class NativeMouseInput
     static IntPtr watchedOwner;
     static bool backgroundWatch;
     static volatile bool watchingInput;
-    static int foreignInputVersion, stopLatched;
+    static int foreignInputVersion, foreignMoveVersion, stopLatched;
+    static readonly Random MotionRandom = new Random();
 
     [UnmanagedFunctionPointer(CallingConvention.Winapi)]
     delegate IntPtr HookProc(int code, IntPtr message, IntPtr data);
@@ -138,6 +141,7 @@ internal static class NativeMouseInput
             if (background && (owner == null || owner.IsDisposed || owner.Disposing || !owner.IsHandleCreated || owner.InvokeRequired))
                 throw new InvalidOperationException("백그라운드 입력을 감시할 도우미 창을 확인하지 못했습니다.");
             Interlocked.Exchange(ref foreignInputVersion, 0);
+            Interlocked.Exchange(ref foreignMoveVersion, 0);
             Interlocked.Exchange(ref stopLatched, 0);
             IntPtr module = GetModuleHandle(null);
             if (module == IntPtr.Zero)
@@ -248,7 +252,9 @@ internal static class NativeMouseInput
             try
             {
                 long kind = message.ToInt64();
-                if (!HasOwnMarker(data, IntPtr.Size == 8 ? 24 : 20) && IsInterferingMouseMessage(kind))
+                if (!HasOwnMarker(data, IntPtr.Size == 8 ? 24 : 20) && kind == WmMouseMove)
+                    Interlocked.Increment(ref foreignMoveVersion);
+                else if (!HasOwnMarker(data, IntPtr.Size == 8 ? 24 : 20) && IsInterferingMouseMessage(kind))
                 {
                     bool targetsOwner = !backgroundWatch || MouseTargetsWatchedOwner(data);
                     if (IsScopedMouseInterference(kind, backgroundWatch, targetsOwner, backgroundWatch && GetForegroundWindow() == watchedOwner))
@@ -313,9 +319,42 @@ internal static class NativeMouseInput
     public static void Click(Form owner, Point screenPoint)
     {
         ValidatePoint(owner, screenPoint);
-        Input[] inputs = { MoveTo(screenPoint), MouseEvent(MouseLeftDown, 0),
+        RequirePointerAt(screenPoint);
+        Input[] inputs = { MouseEvent(MouseLeftDown, 0),
             MouseEvent(MouseLeftUp, 0) };
         Send(owner, screenPoint, inputs);
+    }
+
+    public static async Task MoveAsync(Form owner, Point screenPoint, Action validate)
+    {
+        if (validate == null) throw new ArgumentNullException("validate");
+        validate(); ValidatePoint(owner, screenPoint);
+        Rectangle desktop = SystemInformation.VirtualScreen;
+        int movementVersion = Interlocked.CompareExchange(ref foreignMoveVersion, 0, 0);
+        var plan = CursorMotionPlan.Create(Cursor.Position, screenPoint, desktop, MotionRandom);
+        var watch = Stopwatch.StartNew();
+        Action guard = delegate
+        {
+            validate(); ValidatePoint(owner, screenPoint);
+            if (Interlocked.CompareExchange(ref foreignMoveVersion, 0, 0) != movementVersion)
+                throw new OperationCanceledException("마우스 이동 중 직접 조작이 감지되어 입력을 중지했습니다.");
+            if (SystemInformation.VirtualScreen != desktop)
+                throw new OperationCanceledException("모니터 배치가 바뀌어 마우스 이동을 중지했습니다.");
+        };
+        await CursorMotionRunner.RunAsync(plan, guard,
+            point => Send(owner, screenPoint, new[] { MoveTo(point) }),
+            milliseconds => Task.Delay(milliseconds), () => watch.ElapsedMilliseconds);
+        guard();
+        RequirePointerAt(screenPoint);
+    }
+
+    static void RequirePointerAt(Point target)
+    {
+        // Absolute Windows coordinates may round by one physical pixel. A user
+        // moving the pointer away is never corrected by an instant final jump.
+        Point actual = Cursor.Position;
+        if (Math.Abs((long)actual.X - target.X) > 1 || Math.Abs((long)actual.Y - target.Y) > 1)
+            throw new OperationCanceledException("마우스 위치가 바뀌어 클릭 또는 스크롤을 중지했습니다.");
     }
 
     // delta follows the Windows wheel convention: +120 scrolls one notch up,
@@ -324,7 +363,8 @@ internal static class NativeMouseInput
     {
         if (delta == 0) throw new ArgumentOutOfRangeException("delta", "스크롤 양은 0일 수 없습니다.");
         ValidatePoint(owner, screenPoint);
-        Input[] inputs = { MoveTo(screenPoint), MouseEvent(MouseWheel, unchecked((uint)delta)) };
+        RequirePointerAt(screenPoint);
+        Input[] inputs = { MouseEvent(MouseWheel, unchecked((uint)delta)) };
         Send(owner, screenPoint, inputs);
     }
 

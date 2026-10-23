@@ -309,30 +309,37 @@ internal sealed partial class MainWindow
             if (y < inputMargin || y >= height - inputMargin)
             {
                 if (mouseCompletionRecheck || (mouseSubmitted && kind != "receipt-notice")) throw new InvalidOperationException("예약 후 확인되지 않은 화면 이동을 중지했습니다. 안내문을 직접 확인하세요.");
+                Func<Task> recheckScroll = null;
                 if (kind == "receipt-notice")
                 {
                     // Only the recognized post-submission receipt notice may be
                     // scrolled. Re-read before the wheel input; do not extend the
                     // original submitted-phase deadline while revealing its button.
+                    recheckScroll = async delegate
+                    {
                     Point scrollOrigin = view.PointToScreen(Point.Empty); Size scrollViewport = view.ClientSize;
                     var scrollPlan = await ReadMousePlan(); var scrollAction = ObjectValue(scrollPlan, "action");
-                    if (run != mouseGeneration || !mouseBookingActive) return;
+                    if (run != mouseGeneration || !mouseBookingActive) throw new OperationCanceledException("예약 후 안내 확인이 중지됐습니다.");
                     if (!mouseSubmitted || mousePhase != "submitted" || mouseCompletionRecheck) throw new InvalidOperationException("예약 후 안내 확인 상태가 바뀌어 스크롤을 중지했습니다.");
                     if (scrollAction == null || Get(scrollPlan, "state") != "ready" || Get(scrollAction, "kind") != "receipt-notice"
                         || Math.Abs(NumberValue(scrollAction, "x") - x) > 1 || Math.Abs(NumberValue(scrollAction, "y") - y) > 1
                         || NumberValue(scrollAction, "viewportWidth") != width || NumberValue(scrollAction, "viewportHeight") != height
-                        || scrollOrigin != view.PointToScreen(Point.Empty) || scrollViewport != view.ClientSize) return;
+                        || scrollOrigin != view.PointToScreen(Point.Empty) || scrollViewport != view.ClientSize)
+                        throw new OperationCanceledException("예약 후 안내 위치가 바뀌어 스크롤을 중지했습니다.");
                     if ((DateTime.UtcNow - mousePhaseStarted).TotalSeconds > 30) throw new InvalidOperationException("30초 확인 기한이 지나 안내 스크롤을 중지했습니다. 공식 예약 결과를 직접 확인하세요.");
+                    };
                 }
                 if (NativeMouseInput.ForeignInputVersion() != mouseLastInput) { InterruptMouseBooking("스크롤 전 직접 입력 감지"); return; }
                 if (!InputWindowReady()) { InterruptMouseBooking("스크롤 대상 창 비활성"); return; }
                 // Expanded result lists can be much taller than the first page.
                 if (++mouseScrollCount > (mousePhase == "select" ? 100 : 8)) throw new InvalidOperationException("버튼을 화면에 표시하지 못했습니다.");
                 if (kind == "receipt-notice") siteDiagnostics.AddAction(BackgroundInputEnabled ? "page-receipt-scroll" : "native-receipt-scroll");
-                await WheelAutomation(y < inputMargin ? 360 : -360, run);
+                await WheelAutomation(y < inputMargin ? 360 : -360, run, false, recheckScroll);
                 return;
             }
             // Re-read immediately before input, rejecting rerenders and displaced controls.
+            await PreparePointerAutomation(x, y, width, height, run);
+            if (run != mouseGeneration || !mouseBookingActive) return;
             Point origin = view.PointToScreen(Point.Empty); Size viewport = view.ClientSize;
             var fresh = await ReadMousePlan(); var point = ObjectValue(fresh, "action");
             if (run != mouseGeneration || !mouseBookingActive) return;

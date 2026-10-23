@@ -333,6 +333,11 @@ internal sealed partial class MainWindow
             if (kind != "click" && kind != "type" && kind != "submit-query") throw new InvalidOperationException("알 수 없는 조회 입력입니다.");
             double x = NumberValue(action, "x"), y = NumberValue(action, "y"), width = NumberValue(action, "viewportWidth"), height = NumberValue(action, "viewportHeight");
             if (width <= 0 || height <= 0 || x < 0 || x >= width) throw new InvalidOperationException("조회 버튼의 위치를 확인하세요.");
+            if (kind != "type" && y >= 8 && y < height - 8)
+            {
+                await PreparePointerAutomation(x, y, width, height, run, true);
+                if (!QueueQueryCurrent(run)) return;
+            }
             var origin = view.PointToScreen(Point.Empty); var viewport = view.ClientSize;
             var fresh = await ReadQueueQuery(); var freshAction = ObjectValue(fresh, "action");
             if (!QueueQueryCurrent(run)) return;
