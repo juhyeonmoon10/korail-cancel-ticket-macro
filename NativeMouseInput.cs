@@ -36,6 +36,7 @@ internal static class NativeMouseInput
     static volatile bool watchingInput;
     static int foreignInputVersion, foreignMoveVersion, stopLatched;
     static readonly Random MotionRandom = new Random();
+    static readonly BackgroundSwitchKeys SwitchKeys = new BackgroundSwitchKeys();
 
     [UnmanagedFunctionPointer(CallingConvention.Winapi)]
     delegate IntPtr HookProc(int code, IntPtr message, IntPtr data);
@@ -143,6 +144,9 @@ internal static class NativeMouseInput
             Interlocked.Exchange(ref foreignInputVersion, 0);
             Interlocked.Exchange(ref foreignMoveVersion, 0);
             Interlocked.Exchange(ref stopLatched, 0);
+            // Seed only Windows modifiers already held before this watch. Alt
+            // is supplied by each hook event; no key/text history is recorded.
+            SwitchKeys.Reset(background && IsHeld(0x5B), background && IsHeld(0x5C));
             IntPtr module = GetModuleHandle(null);
             if (module == IntPtr.Zero)
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "입력 감시를 준비하지 못했습니다.");
@@ -189,6 +193,7 @@ internal static class NativeMouseInput
             }
             watchedOwner = IntPtr.Zero;
             backgroundWatch = false;
+            SwitchKeys.Reset();
             // Keep a failed handle and the static delegates rooted, so another
             // cleanup can be attempted and a new watch cannot silently replace it.
             if (failed) throw new Win32Exception(error, "입력 감시를 종료하지 못해 기능을 중지했습니다.");
@@ -227,11 +232,53 @@ internal static class NativeMouseInput
     internal static bool IsStopKeyDown(long message, int virtualKey)
     { return (message == WmKeyDown || message == WmSysKeyDown) && virtualKey == VkF8; }
 
-    internal static bool IsBackgroundSwitchKey(int virtualKey, bool altHeld)
+    // Retain only the held Windows modifiers and pending releases of supported
+    // switching chords. A key-up can arrive after its modifier was released or
+    // the helper regained foreground; it must still complete the same chord.
+    internal sealed class BackgroundSwitchKeys
     {
-        // Let the user move to another app through Alt+Tab. Ordinary Tab and
-        // every other content key remain interference while this owner is active.
-        return virtualKey == 0x12 || virtualKey == 0xA4 || virtualKey == 0xA5 || (virtualKey == 0x09 && altHeld);
+        bool leftWindows, rightWindows, tabRelease;
+        readonly bool[] shiftReleases = new bool[3];
+        readonly bool[] numberReleases = new bool[10];
+
+        internal void Reset(bool leftHeld = false, bool rightHeld = false)
+        {
+            leftWindows = leftHeld; rightWindows = rightHeld; tabRelease = false;
+            Array.Clear(shiftReleases, 0, shiftReleases.Length);
+            Array.Clear(numberReleases, 0, numberReleases.Length);
+        }
+
+        internal bool Observe(long message, int virtualKey, bool altHeld)
+        {
+            bool down = message == 0x0100 || message == 0x0104;
+            bool up = message == 0x0101 || message == 0x0105;
+            if (!down && !up) return false;
+            if (virtualKey == 0x5B) { leftWindows = down; return true; }
+            if (virtualKey == 0x5C) { rightWindows = down; return true; }
+            if (virtualKey == 0x12 || virtualKey == 0xA4 || virtualKey == 0xA5) return true;
+
+            if (virtualKey == 0x09)
+                return ChordKey(down, altHeld || leftWindows || rightWindows, ref tabRelease);
+            int shift = virtualKey == 0x10 ? 0 : virtualKey == 0xA0 ? 1 : virtualKey == 0xA1 ? 2 : -1;
+            if (shift >= 0) return ChordKey(down, altHeld, ref shiftReleases[shift]);
+            if (virtualKey >= 0x30 && virtualKey <= 0x39)
+                return ChordKey(down, leftWindows || rightWindows, ref numberReleases[virtualKey - 0x30]);
+            return false;
+        }
+
+        static bool ChordKey(bool down, bool permitted, ref bool releasePending)
+        {
+            if (down)
+            {
+                // A new/repeated press without its modifier is ordinary page
+                // input, even when a prior switching release is still pending.
+                releasePending = permitted;
+                return permitted;
+            }
+            bool matched = releasePending;
+            releasePending = false;
+            return matched;
+        }
     }
 
     static bool MouseTargetsWatchedOwner(IntPtr data)
@@ -273,18 +320,20 @@ internal static class NativeMouseInput
             try
             {
                 // KBDLLHOOKSTRUCT.dwExtraInfo starts at byte 16 on x86 and x64.
-                // Only an F8-down boolean is retained; no key/text log is kept.
+                // Only stop/switch-chord booleans are retained; no key/text log
+                // or event history is kept.
                 if (!HasOwnMarker(data, 16))
                 {
                     int virtualKey = Marshal.ReadInt32(data);
+                    long kind = message.ToInt64();
                     // KBDLLHOOKSTRUCT.flags has the event's Alt context. Using
                     // it avoids the timing ambiguity of async key state inside
-                    // a low-level callback; no key or modifier history is kept.
-                    bool switchKey = backgroundWatch && IsBackgroundSwitchKey(virtualKey, (Marshal.ReadInt32(data, 8) & 0x20) != 0);
+                    // a low-level callback. Matching chord releases are tracked
+                    // even while another app has foreground.
+                    bool switchKey = backgroundWatch && SwitchKeys.Observe(kind, virtualKey, (Marshal.ReadInt32(data, 8) & 0x20) != 0);
                     bool ownerForeground = !backgroundWatch || GetForegroundWindow() == watchedOwner;
                     if (!switchKey && IsScopedKeyboardInterference(backgroundWatch, ownerForeground))
                         Interlocked.Increment(ref foreignInputVersion);
-                    long kind = message.ToInt64();
                     if (IsStopKeyDown(kind, virtualKey))
                         Interlocked.Exchange(ref stopLatched, 1);
                 }

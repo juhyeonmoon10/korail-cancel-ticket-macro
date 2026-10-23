@@ -20,6 +20,99 @@ internal static class NativeInputPolicyTests
         return count;
     }
 
+    static void CheckSwitchingKeys()
+    {
+        var keys = new NativeMouseInput.BackgroundSwitchKeys();
+        foreach (int alt in new[] { 0x12, 0xA4, 0xA5 })
+            foreach (bool modifierFirst in new[] { false, true })
+            {
+                keys.Reset();
+                Check(keys.Observe(0x0104, alt, false), "Alt down can begin switching: " + alt);
+                Check(keys.Observe(0x0104, 0x09, true), "Alt+Tab press is a switching chord");
+                if (modifierFirst) Check(keys.Observe(0x0105, alt, true), "Alt may release before Tab");
+                Check(keys.Observe(0x0101, 0x09, !modifierFirst), "matching Tab release remains switching after focus/modifier changes");
+                if (!modifierFirst) Check(keys.Observe(0x0105, alt, true), "Alt may release after Tab");
+                Check(!keys.Observe(0x0101, 0x09, false), "duplicate Tab release is no longer exempt");
+                Check(!keys.Observe(0x0100, 0x09, false), "later plain Tab remains direct page input");
+            }
+
+        foreach (int shift in new[] { 0x10, 0xA0, 0xA1 })
+            foreach (bool modifierFirst in new[] { false, true })
+            {
+                keys.Reset();
+                Check(keys.Observe(0x0104, 0xA4, false), "Alt starts reverse switching");
+                Check(keys.Observe(0x0104, shift, true), "Shift under Alt can reverse app switching");
+                Check(keys.Observe(0x0104, 0x09, true), "Alt+Shift+Tab press is permitted");
+                if (modifierFirst) Check(keys.Observe(0x0105, 0xA4, true), "reverse-switch Alt can release first");
+                Check(keys.Observe(0x0101, shift, !modifierFirst), "reverse-switch Shift release retains its chord");
+                Check(keys.Observe(0x0101, 0x09, !modifierFirst), "reverse-switch Tab release retains its chord");
+                if (!modifierFirst) Check(keys.Observe(0x0105, 0xA4, true), "reverse-switch Alt can release last");
+                Check(!keys.Observe(0x0100, shift, false), "ordinary Shift without a switching chord remains guarded");
+            }
+
+        foreach (int windows in new[] { 0x5B, 0x5C })
+            foreach (int key in new[] { 0x09, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39 })
+                foreach (bool modifierFirst in new[] { false, true })
+                {
+                    keys.Reset();
+                    Check(keys.Observe(0x0100, windows, false), "Windows key down may open another app: " + windows);
+                    Check(keys.Observe(0x0100, key, false), "Windows app-switch chord is permitted: " + key);
+                    Check(keys.Observe(0x0100, key, false), "repeated app-switch chord retains its modifier");
+                    if (modifierFirst) Check(keys.Observe(0x0101, windows, false), "Windows key may release before switch key");
+                    Check(keys.Observe(0x0101, key, false), "switch-key release is matched after another app or helper gains focus");
+                    if (!modifierFirst) Check(keys.Observe(0x0101, windows, false), "Windows key may release after switch key");
+                    Check(!keys.Observe(0x0101, key, false), "duplicate switch-key release is guarded");
+                    Check(!keys.Observe(0x0100, key, false), "next ordinary Tab/number press is guarded");
+                }
+
+        keys.Reset();
+        Check(keys.Observe(0x0100, 0x5B, false) && keys.Observe(0x0100, 0x5C, false), "both Windows modifiers can be held independently");
+        Check(keys.Observe(0x0101, 0x5B, false) && keys.Observe(0x0100, 0x09, false), "releasing left Windows keeps right Windows switching active");
+        Check(keys.Observe(0x0101, 0x5C, false) && keys.Observe(0x0101, 0x09, false), "matching release survives both Windows modifiers releasing");
+        Check(!keys.Observe(0x0100, 0x09, false), "no Windows modifier remains stuck");
+
+        foreach (bool left in new[] { false, true })
+        {
+            keys.Reset(left, !left);
+            Check(keys.Observe(0x0100, 0x09, false), "Windows key already held at watch start permits app switching");
+            Check(keys.Observe(0x0101, left ? 0x5B : 0x5C, false), "pre-held Windows modifier can release");
+            Check(keys.Observe(0x0101, 0x09, false), "pre-held Windows chord release is matched");
+        }
+
+        keys.Reset();
+        Check(keys.Observe(0x0104, 0x09, true), "Alt context permits a chord begun after the watch starts");
+        Check(!keys.Observe(0x0100, 0x09, false), "Tab repeated after Alt releases becomes ordinary input");
+        Check(!keys.Observe(0x0101, 0x09, false), "ordinary Tab repeat clears old switching release");
+        Check(keys.Observe(0x0100, 0x5B, false) && keys.Observe(0x0100, 0x31, false), "prepare pending Windows switch before watch reset");
+        Check(keys.Observe(0x0104, 0xA0, true) && keys.Observe(0x0104, 0x09, true), "prepare pending Alt switch before watch reset");
+        keys.Reset();
+        Check(!keys.Observe(0x0100, 0x09, false) && !keys.Observe(0x0101, 0x09, false), "watch reset clears Windows and Tab state");
+        Check(!keys.Observe(0x0101, 0x31, false) && !keys.Observe(0x0101, 0xA0, false), "watch reset clears number and Shift releases");
+
+        foreach (int key in new[] { 0x09, 0x10, 0x11, 0xA2, 0xA3, 0x30, 0x31, 0x41, 0x0D, 0x1B })
+            foreach (long message in new long[] { 0x0100, 0x0101, 0x0104, 0x0105 })
+            {
+                keys.Reset();
+                Check(!keys.Observe(message, key, false), "ordinary helper keyboard input remains guarded: " + key + "/" + message);
+            }
+        foreach (int key in new[] { 0x11, 0xA2, 0xA3, 0x41, 0x30, 0x0D, 0x1B, 0x77 })
+        {
+            keys.Reset();
+            Check(!keys.Observe(0x0104, key, true), "Alt does not exempt content/control/stop keys: " + key);
+        }
+        foreach (bool windowsHeld in new[] { false, true })
+            foreach (bool altHeld in new[] { false, true })
+                foreach (long message in new long[] { 0x0100, 0x0104 })
+                {
+                    keys.Reset(windowsHeld, false);
+                    Check(!keys.Observe(message, 0x77, altHeld) && NativeMouseInput.IsStopKeyDown(message, 0x77),
+                        "F8 remains global independently of Windows/Alt switching state");
+                }
+        keys.Reset();
+        Check(!keys.Observe(0x0400, 0x5B, false) && !keys.Observe(0x0100, 0x09, false), "unknown Windows message cannot latch switching state");
+        Check(!keys.Observe(0x0101, 0x09, true) && !keys.Observe(0x0101, 0xA0, true), "unmatched pre-watch Tab/Shift releases remain guarded");
+    }
+
     static int Main()
     {
         try
@@ -94,19 +187,7 @@ internal static class NativeInputPolicyTests
             Check(!NativeMouseInput.IsStopKeyDown(0x0100, 0x78), "other function key does not request stop");
             Check(!NativeMouseInput.IsStopKeyDown(0x0400, 0x77), "unknown keyboard message is not an F8 down");
 
-            foreach (int altKey in new[] { 0x12, 0xA4, 0xA5 })
-            {
-                Check(NativeMouseInput.IsBackgroundSwitchKey(altKey, false), "Alt press may begin switching: " + altKey);
-                Check(NativeMouseInput.IsBackgroundSwitchKey(altKey, true), "Alt release remains harmless: " + altKey);
-            }
-            Check(NativeMouseInput.IsBackgroundSwitchKey(0x09, true), "Alt+Tab can switch away and back without pausing");
-            Check(!NativeMouseInput.IsBackgroundSwitchKey(0x09, false), "plain Tab or Ctrl+Tab still interferes");
-            Check(!NativeMouseInput.IsBackgroundSwitchKey(0x11, true), "Control is not exempted by holding Alt");
-            Check(!NativeMouseInput.IsBackgroundSwitchKey(0x41, true), "Alt+letter still interferes with the helper");
-            Check(!NativeMouseInput.IsBackgroundSwitchKey(0x77, true) && NativeMouseInput.IsStopKeyDown(0x0104, 0x77),
-                "Alt+F8 remains an immediate global stop");
-            Check(!NativeMouseInput.IsBackgroundSwitchKey(0x09, false),
-                "Tab released after Alt was released fails closed if the helper regained focus");
+            CheckSwitchingKeys();
 
             foreach (long wheel in new long[] { 0x020A, 0x020E })
             {

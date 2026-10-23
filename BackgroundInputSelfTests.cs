@@ -11,18 +11,27 @@ internal sealed partial class MainWindow
     static extern IntPtr BackgroundTestForegroundWindow();
 
     // Integration checks for the actual embedded WebView protocol transport.
-    // The fixture is an isolated local document; no input hooks, native input,
-    // window activation, Korail request, reservation or Telegram call is used.
+    // The fixture is an isolated local document. The host test briefly observes
+    // input with the normal hooks, but sends no native input, activates no window,
+    // and makes no Korail request, reservation or Telegram call.
     async Task RunBackgroundInputTests()
     {
         if (!Program.SelfTest || mouseBookingActive || queueRunning)
             throw new InvalidOperationException("중지된 로컬 모의 검사에서만 페이지 입력을 검사할 수 있습니다.");
         int noticesBefore = demoNotifications.Count;
-        Assert(backgroundInputCheck != null && !backgroundInputCheck.Checked && !BackgroundInputEnabled,
-            "background input: new session defaults to the unchanged foreground mode");
+        Assert(backgroundInputCheck != null && backgroundInputCheck.Checked && BackgroundInputEnabled,
+            "background input: new session defaults to page-only background input with the control checked");
         Assert(backgroundInputCheck.Enabled && backgroundInputCheck.Visible && backgroundInputCheck.TabStop &&
             backgroundInputCheck.AccessibleName == "다른 앱과 동시 작업",
-            "background input: opt-in control is available and accessible in the main window");
+            "background input: native-input opt-out is available and accessible in the main window");
+        bool manualDiagnostic = Program.ManualDiagnostic;
+        try
+        {
+            Program.ManualDiagnostic = true;
+            Assert(!BackgroundInputEnabled,
+                "background input: manual diagnostic policy disables page-only automation even when the stored mode is enabled");
+        }
+        finally { Program.ManualDiagnostic = manualDiagnostic; }
         Exception failure = null;
         try
         {
@@ -32,7 +41,7 @@ internal sealed partial class MainWindow
               window.KorailDesktopHelper.stop('local background input test');
               document.documentElement.style.cssText='height:100%;overflow:hidden';
               document.body.style.cssText='margin:0;height:100%;overflow:hidden';
-              document.body.innerHTML='<div id=background-fixture style=position:fixed;inset:0;background:white;z-index:2147483647><button id=background-click style=position:absolute;left:16px;top:12px;width:180px;height:38px>Local input test</button><input id=background-station name=searchTxt title=station style=position:absolute;left:16px;top:62px;width:220px;height:32px><div id=background-scroll style=position:absolute;left:16px;top:112px;bottom:12px;width:320px;overflow:auto><div style=height:3000px>Local scrolling fixture</div></div></div>';
+              document.body.innerHTML='<div id=background-fixture style=position:fixed;inset:0;background:white;z-index:2147483647><button id=background-click style=position:absolute;left:16px;top:12px;width:180px;height:38px>Local input test</button><input id=background-station name=searchTxt title=station style=position:absolute;left:16px;top:62px;width:220px;height:32px><div id=background-scroll style=position:absolute;left:16px;top:112px;bottom:12px;right:16px;overflow:auto><div style=height:3000px>Local scrolling fixture</div></div></div>';
               const s=window.__backgroundInputSelfTest={clicks:0,inputs:0,wheels:0,clickTrusted:false,inputTrusted:false,wheelTrusted:false};
               const station=document.getElementById('background-station');station.value='기존역';
               document.getElementById('background-click').addEventListener('click',e=>{s.clicks++;s.clickTrusted=e.isTrusted;});
@@ -111,6 +120,7 @@ internal sealed partial class MainWindow
                 "background input: stopped text replacement sends no insertion, retry or native fallback");
             Assert(Cursor.Position == pointer && BackgroundTestForegroundWindow() == foreground,
                 "background input: rejected and interrupted inputs leave OS interaction unchanged");
+            await RunBackgroundHostInputTests(button);
             Assert(demoNotifications.Count == noticesBefore && !mouseBookingActive && !queueRunning && !sleepPrevention.Active,
                 "background input: fixture sends no reservation notice and starts no automation loop");
         }
@@ -119,6 +129,52 @@ internal sealed partial class MainWindow
         // error so subsequent tests cannot consume this altered local fixture.
         if (!closing && !IsDisposed) await LoadCardDemo("available");
         if (failure != null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
+    }
+
+    async Task RunBackgroundHostInputTests(Dictionary<string, object> button)
+    {
+        ValidateBackgroundTestDocument();
+        bool priorDemo = mouseDemo;
+        string priorPhase = mousePhase;
+        bool watching = false;
+        try
+        {
+            // Do not change focus to arrange the fixture. Earlier preview dialogs
+            // may have activated the transparent owner. Exercise the real host
+            // path either way; when it starts inactive it must remain inactive.
+            bool beganForeground = NativeMouseInput.IsForeground(this);
+            Assert(InputWindowReady(), "background host: page-only input is ready without imposing a foreground prerequisite");
+            mouseDemo = true; mousePhase = "select"; mouseBookingActive = true;
+            mouseGeneration++;
+            BeginAutomationInputWatch(); watching = true;
+            mouseLastInput = NativeMouseInput.ForeignInputVersion();
+            int run = mouseGeneration;
+            for (int i = 0; i < 3; i++)
+            {
+                await PreparePointerAutomation(NumberValue(button, "x"), NumberValue(button, "y"), NumberValue(button, "width"), NumberValue(button, "height"), run);
+                await ClickAutomation(NumberValue(button, "x"), NumberValue(button, "y"), NumberValue(button, "width"), NumberValue(button, "height"), run);
+                await Task.Delay(80);
+                Assert(mouseBookingActive && !mousePaused && run == mouseGeneration,
+                    "background host: repeated page input keeps the run active " + (i + 1));
+            }
+            Assert(await EvalBool("__backgroundInputSelfTest.clicks===4"), "background host: three host clicks reach the local button");
+            await WheelAutomation(-120, run);
+            DateTime deadline = DateTime.UtcNow.AddSeconds(3);
+            while (DateTime.UtcNow < deadline && !await EvalBool("__backgroundInputSelfTest.wheels===2")) await Task.Delay(50);
+            Assert(await EvalBool("__backgroundInputSelfTest.wheels===2"), "background host: host scroll reaches the local page");
+            Assert(beganForeground || !NativeMouseInput.IsForeground(this),
+                "background host: input does not acquire foreground when the run starts inactive");
+            mouseGeneration++;
+            await RejectBackgroundInput<OperationCanceledException>(() => ClickAutomation(NumberValue(button, "x"), NumberValue(button, "y"), NumberValue(button, "width"), NumberValue(button, "height"), run),
+                "background host: invalidated run still rejects another click");
+            Assert(await EvalBool("__backgroundInputSelfTest.clicks===4"), "background host: stop prevents another page click");
+        }
+        finally
+        {
+            mouseBookingActive = false; mouseGeneration++;
+            mouseDemo = priorDemo; mousePhase = priorPhase;
+            if (watching) NativeMouseInput.EndInputWatch();
+        }
     }
 
     void ValidateBackgroundTestDocument()

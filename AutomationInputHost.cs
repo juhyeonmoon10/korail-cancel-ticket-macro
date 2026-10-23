@@ -32,7 +32,7 @@ internal sealed partial class MainWindow
         StopMouseBooking(null);
         backgroundInput = backgroundInputCheck.Checked;
         if (ready) await StopHelper(BackgroundInputEnabled
-            ? "동시 작업 모드 · 다른 앱을 사용할 수 있습니다. 도우미는 최소화하지 마세요. 실제 코레일 호환성은 미검증입니다."
+            ? "백그라운드 실행 · 다른 앱에서 마우스·키보드를 사용해도 계속됩니다. 도우미는 최소화하지 마세요. 실제 코레일 호환성은 미검증입니다."
             : "마우스 모드 · 도우미를 앞에 두고 실행하세요.");
         UpdateShellState();
     }

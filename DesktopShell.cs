@@ -12,6 +12,9 @@ internal sealed partial class MainWindow
 
     void InitializeDesktopShell()
     {
+        // Establish the launch mode before wiring CheckedChanged so constructing
+        // the shell never invokes the transport-change stop handler.
+        backgroundInput = !Program.ManualDiagnostic;
         UiTheme.StyleForm(this);
         var shell = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = Padding.Empty, Padding = Padding.Empty };
         shell.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 204));
@@ -20,7 +23,7 @@ internal sealed partial class MainWindow
         var sidebar = new Panel { Dock = DockStyle.Fill, BackColor = UiTheme.Surface, Margin = Padding.Empty, Padding = new Padding(16, 20, 16, 16) };
         var brand = new Panel { Dock = DockStyle.Top, Height = 100 };
         brand.Controls.Add(new Label { Text = "한 장 도우미", Font = new Font(Font.FontFamily, 16, FontStyle.Bold), ForeColor = UiTheme.Text, AutoSize = true, Location = new Point(0, 4) });
-        brand.Controls.Add(new Label { Text = "KORAIL HELPER  /  0.11.1", Font = new Font(Font.FontFamily, 8), ForeColor = UiTheme.Muted, AutoSize = true, Location = new Point(2, 48) });
+        brand.Controls.Add(new Label { Text = "KORAIL HELPER  /  0.11.2", Font = new Font(Font.FontFamily, 8), ForeColor = UiTheme.Muted, AutoSize = true, Location = new Point(2, 48) });
         var nav = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, Padding = Padding.Empty };
         AddNavButton(nav, "코레일 열기", delegate { Navigate("https://www.korail.com/ticket/main"); });
         AddNavButton(nav, "예약 관리", async delegate { await OpenBookingQueue(); }).Enabled = !Program.ManualDiagnostic;
@@ -49,8 +52,8 @@ internal sealed partial class MainWindow
         mouseContinueButton = AddActionButton(actions, "계속", async delegate { await ResumeMouseBooking(); });
         mouseContinueButton.Enabled = false;
         AddActionButton(actions, "모두 중지 (F8)", async delegate { await StopHelper("사용자가 모두 중지했습니다."); }, "danger");
-        backgroundInputCheck = new CheckBox { Text = "동시 작업 (실험)", AutoSize = true, Margin = new Padding(8, 11, 8, 4), AccessibleName = "다른 앱과 동시 작업", Enabled = !Program.ManualDiagnostic };
-        shellTips.SetToolTip(backgroundInputCheck, "다른 앱을 사용하는 동안 도우미 웹 화면에만 입력합니다. 최소화·화면 잠금은 중지하며 실제 코레일 호환성은 미검증입니다. 변경하면 현재 실행이 중지됩니다.");
+        backgroundInputCheck = new CheckBox { Text = "백그라운드 실행 (기본)", Checked = backgroundInput, AutoSize = true, Margin = new Padding(8, 11, 8, 4), AccessibleName = "다른 앱과 동시 작업", Enabled = !Program.ManualDiagnostic };
+        shellTips.SetToolTip(backgroundInputCheck, "기본으로 켜집니다. 다른 앱에서 마우스·키보드를 사용해도 도우미 웹 화면에만 입력하며 계속 실행합니다. 해제하면 실제 커서를 사용하는 마우스 모드로 전환합니다. 최소화·화면 잠금은 중지하며 실제 코레일 호환성은 미검증입니다. 변경하면 현재 실행이 중지됩니다.");
         backgroundInputCheck.CheckedChanged += ChangeBackgroundInput;
         actions.Controls.Add(backgroundInputCheck);
         pageNoticeButton = AddActionButton(actions, "안내 확인", delegate { OpenDeferredPageNotice(); });
@@ -78,7 +81,8 @@ internal sealed partial class MainWindow
         stateHeading.Controls.Add(new Label { Text = "실행 상태", AutoSize = true, Font = new Font(Font, FontStyle.Bold), Margin = new Padding(0, 3, 0, 0) });
         stateHeading.Controls.Add(shellState);
         status.Dock = DockStyle.Fill; status.Margin = new Padding(0, 4, 0, 4); status.AutoEllipsis = true; status.AccessibleName = "실행 상태 안내";
-        status.Text = "준비 중 · 마우스 이동은 계속, 조회 대기 중 직접 입력·창 전환은 일시정지합니다.";
+        status.Text = Program.ManualDiagnostic ? "준비 중 · 수동 진단 모드 · 자동 기능 꺼짐"
+            : "준비 중 · 다른 앱에서 마우스·키보드를 사용해도 백그라운드 실행은 계속됩니다.";
         var details = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = Padding.Empty };
         details.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 55)); details.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 45));
         notificationStatus.Dock = sleepStatus.Dock = DockStyle.Fill;
