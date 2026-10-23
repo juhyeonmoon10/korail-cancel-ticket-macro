@@ -23,6 +23,7 @@ internal sealed partial class MainWindow
 
     bool AutomationAvailable()
     {
+        if (pendingPageNotice != null) { status.Text = "페이지 안내를 먼저 확인하세요. 상단 ‘안내 확인’을 누르세요."; return false; }
         if (Program.ManualDiagnostic) { status.Text = "수동 진단 모드에서는 자동 입력과 도우미 스크립트를 사용하지 않습니다."; return false; }
         if (siteDiagnostics.SiteBlocked || mouseRefreshSiteBlocked) { status.Text = SiteBlockMessage(); return false; }
         return true;

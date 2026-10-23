@@ -107,7 +107,7 @@ internal sealed partial class MainWindow
             CheckMorePlan(plan);
             if (Get(plan, "state") != "ready") throw new InvalidOperationException("조회 결과가 표시된 뒤 목록을 읽어주세요.");
             mouseMoreQuery = Get(plan, "queryFingerprint");
-            if (!NativeMouseInput.IsForeground(this)) throw new InvalidOperationException("도우미 창을 앞에 두고 목록을 읽어주세요.");
+            if (!InputWindowReady()) throw new InvalidOperationException("도우미 창을 열고 목록을 읽어주세요. 마우스 모드에서는 맨 앞으로 표시하세요.");
             if (!AutomationAvailable()) { StopMouseBooking(status.Text); return; }
             StartMouseLoop();
             status.Text = "더보기 포함 열차 목록 읽기 · 클릭·창 전환 시 일시정지 · F8 중지";
@@ -160,7 +160,7 @@ internal sealed partial class MainWindow
         if (y < 64 || y >= height - 64)
         {
             if (++mouseMoreScrollCount > 100) throw new InvalidOperationException("더보기 버튼을 화면에 표시하지 못했습니다.");
-            NativeMouseInput.Wheel(this, view.PointToScreen(new Point(view.ClientSize.Width / 2, view.ClientSize.Height / 2)), y < 64 ? 480 : -480);
+            await WheelAutomation(y < 64 ? 480 : -480, run);
             return true;
         }
         Point origin = view.PointToScreen(Point.Empty); Size viewport = view.ClientSize;
@@ -174,8 +174,9 @@ internal sealed partial class MainWindow
         if (!CheckMoreInput()) return true;
         mouseMoreBaseline = MoreKeys(fresh); mouseMorePending = true; mouseMoreSent = DateTime.UtcNow;
         mouseMoreStableKey = null; mouseMoreCount++; mouseMoreScrollCount = 0;
-        siteDiagnostics.AddAction("native-more");
-        NativeMouseInput.Click(this, view.PointToScreen(new Point((int)Math.Round(x * view.ClientSize.Width / width), (int)Math.Round(y * view.ClientSize.Height / height))));
+        siteDiagnostics.AddAction(BackgroundInputEnabled ? "page-more" : "native-more");
+        await ClickAutomation(x, y, width, height, run);
+        if (run != mouseGeneration || !mouseBookingActive) return true;
         status.Text = "더보기 " + mouseMoreCount + "회 클릭 · 새 열차가 추가되는지 확인 중…";
         return true;
     }
@@ -184,7 +185,7 @@ internal sealed partial class MainWindow
     {
         if (NativeMouseInput.IsStopPressed()) throw new InvalidOperationException("F8로 중지했습니다.");
         if (NativeMouseInput.ForeignInputVersion() != mouseLastInput) { InterruptMouseBooking("더보기 전 직접 입력 감지"); return false; }
-        if (WindowState == FormWindowState.Minimized || !NativeMouseInput.IsForeground(this)) { InterruptMouseBooking("더보기 전 창 전환"); return false; }
+        if (!InputWindowReady()) { InterruptMouseBooking("더보기 대상 창 비활성"); return false; }
         return true;
     }
 }

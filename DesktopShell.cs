@@ -20,7 +20,7 @@ internal sealed partial class MainWindow
         var sidebar = new Panel { Dock = DockStyle.Fill, BackColor = UiTheme.Surface, Margin = Padding.Empty, Padding = new Padding(16, 20, 16, 16) };
         var brand = new Panel { Dock = DockStyle.Top, Height = 100 };
         brand.Controls.Add(new Label { Text = "한 장 도우미", Font = new Font(Font.FontFamily, 16, FontStyle.Bold), ForeColor = UiTheme.Text, AutoSize = true, Location = new Point(0, 4) });
-        brand.Controls.Add(new Label { Text = "KORAIL HELPER  /  0.9.1", Font = new Font(Font.FontFamily, 8), ForeColor = UiTheme.Muted, AutoSize = true, Location = new Point(2, 48) });
+        brand.Controls.Add(new Label { Text = "KORAIL HELPER  /  0.10.0", Font = new Font(Font.FontFamily, 8), ForeColor = UiTheme.Muted, AutoSize = true, Location = new Point(2, 48) });
         var nav = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, Padding = Padding.Empty };
         AddNavButton(nav, "코레일 열기", delegate { Navigate("https://www.korail.com/ticket/main"); });
         AddNavButton(nav, "예약 관리", async delegate { await OpenBookingQueue(); }).Enabled = !Program.ManualDiagnostic;
@@ -35,7 +35,7 @@ internal sealed partial class MainWindow
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("이전 연습 화면", null, delegate { Navigate(LocalBase + "demo.html"); });
         tools.Click += delegate { menu.Show(tools, new Point(tools.Width, 0)); };
-        var sidebarNote = new Label { Dock = DockStyle.Bottom, Height = 100, ForeColor = UiTheme.Muted, Font = new Font(Font.FontFamily, 9), Text = "F8  언제든 중지\n\n실행 중에는 창을\n앞에 열어 두세요." };
+        var sidebarNote = new Label { Dock = DockStyle.Bottom, Height = 100, ForeColor = UiTheme.Muted, Font = new Font(Font.FontFamily, 9), Text = "F8  언제든 중지\n\n동시 작업 모드에서도\n최소화하지 마세요." };
         sidebar.Controls.Add(nav); sidebar.Controls.Add(brand); sidebar.Controls.Add(sidebarNote);
 
         var workspace = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty, Padding = new Padding(18, 16, 18, 14), BackColor = UiTheme.Background };
@@ -49,6 +49,12 @@ internal sealed partial class MainWindow
         mouseContinueButton = AddActionButton(actions, "계속", async delegate { await ResumeMouseBooking(); });
         mouseContinueButton.Enabled = false;
         AddActionButton(actions, "모두 중지 (F8)", async delegate { await StopHelper("사용자가 모두 중지했습니다."); }, "danger");
+        backgroundInputCheck = new CheckBox { Text = "동시 작업 (실험)", AutoSize = true, Margin = new Padding(8, 11, 8, 4), AccessibleName = "다른 앱과 동시 작업", Enabled = !Program.ManualDiagnostic };
+        shellTips.SetToolTip(backgroundInputCheck, "다른 앱을 사용하는 동안 도우미 웹 화면에만 입력합니다. 최소화·화면 잠금은 중지하며 실제 코레일 호환성은 미검증입니다. 변경하면 현재 실행이 중지됩니다.");
+        backgroundInputCheck.CheckedChanged += ChangeBackgroundInput;
+        actions.Controls.Add(backgroundInputCheck);
+        pageNoticeButton = AddActionButton(actions, "안내 확인", delegate { OpenDeferredPageNotice(); });
+        pageNoticeButton.Visible = false;
         bookingButton.Enabled = refreshButton.Enabled = !Program.ManualDiagnostic;
         siteDiagnostics.ManualMode = Program.ManualDiagnostic;
         commands.Controls.Add(actions, 0, 1);
@@ -120,6 +126,7 @@ internal sealed partial class MainWindow
     {
         bool blocked = siteDiagnostics.SiteBlocked || mouseRefreshSiteBlocked;
         shellState.Text = Program.ManualDiagnostic ? "수동 진단" : blocked ? "중지됨" : mousePaused ? "일시정지" : queueRunning ? "예약 순서 실행 중" : mouseBookingActive ? "실행 중" : "대기";
+        if (BackgroundInputEnabled) shellState.Text += " · 동시 작업";
         shellState.BackColor = blocked ? Color.FromArgb(255, 233, 235) : mousePaused ? Color.FromArgb(255, 243, 218) : mouseBookingActive ? Color.FromArgb(228, 242, 235) : Color.FromArgb(234, 239, 248);
         shellState.ForeColor = blocked ? UiTheme.Danger : mousePaused ? Color.FromArgb(139, 89, 13) : mouseBookingActive ? Color.FromArgb(30, 111, 78) : UiTheme.Muted;
     }
@@ -155,23 +162,29 @@ internal sealed partial class MainWindow
         if (loaded != loadWaiter.Task) throw new TimeoutException("안내 화면 로딩 제한시간 초과");
         await loadWaiter.Task; loadWaiter = null;
         Size original = Size;
+        bool noticeVisible = pageNoticeButton.Visible;
         try
         {
             foreach (bool compact in new [] { false, true })
             {
                 Size = compact ? MinimumSize : original;
+                foreach (bool showNotice in new [] { false, true })
+                {
+                pageNoticeButton.Visible = showNotice;
                 PerformLayout(); await Task.Delay(200);
                 bool visible = true;
                 foreach (Control control in refreshButton.Parent.Controls)
                 {
+                    if (!control.Visible) continue;
                     Rectangle bounds = RectangleToClient(control.RectangleToScreen(control.ClientRectangle));
                     visible &= ClientRectangle.Contains(bounds) && control.Parent.ClientRectangle.Contains(control.Bounds);
                 }
+                await RenderShellPreview((compact ? "desktop-compact" : "desktop") + (showNotice ? "-notice" : "") + "-preview.png");
                 Assert(visible && view.ClientSize.Width >= 600 && view.ClientSize.Height >= 300,
-                    "desktop layout: all execution actions and browser fit " + (compact ? "minimum" : "default") + " window size");
-                await RenderShellPreview(compact ? "desktop-compact-preview.png" : "desktop-preview.png");
+                    "desktop layout: all visible execution actions and browser fit " + (compact ? "minimum" : "default") + " window size" + (showNotice ? " with notice" : ""));
+                }
             }
         }
-        finally { Size = original; }
+        finally { pageNoticeButton.Visible = noticeVisible; Size = original; }
     }
 }

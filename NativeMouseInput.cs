@@ -29,6 +29,8 @@ internal static class NativeMouseInput
     static readonly HookProc MouseHookCallback = ObserveMouse;
     static readonly HookProc KeyboardHookCallback = ObserveKeyboard;
     static IntPtr mouseHook, keyboardHook;
+    static IntPtr watchedOwner;
+    static bool backgroundWatch;
     static volatile bool watchingInput;
     static int foreignInputVersion, stopLatched;
 
@@ -121,6 +123,11 @@ internal static class NativeMouseInput
     // Install only for the duration of the reservation workflow. Low-level hooks
     // run on this message-loop thread; they neither suppress nor inject events.
     public static void BeginInputWatch()
+    { BeginInputWatch(null, false); }
+
+    // Background page input has its own target. Ignore typing and clicks in
+    // other apps while retaining direct interference in this owner and F8.
+    public static void BeginInputWatch(Form owner, bool background)
     {
         lock (WatchLock)
         {
@@ -128,6 +135,8 @@ internal static class NativeMouseInput
                 throw new InvalidOperationException("이전 입력 감시가 아직 종료되지 않았습니다.");
             if (!Application.MessageLoop)
                 throw new InvalidOperationException("입력 감시는 창의 UI 메시지 루프에서 시작해야 합니다.");
+            if (background && (owner == null || owner.IsDisposed || owner.Disposing || !owner.IsHandleCreated || owner.InvokeRequired))
+                throw new InvalidOperationException("백그라운드 입력을 감시할 도우미 창을 확인하지 못했습니다.");
             Interlocked.Exchange(ref foreignInputVersion, 0);
             Interlocked.Exchange(ref stopLatched, 0);
             IntPtr module = GetModuleHandle(null);
@@ -135,6 +144,8 @@ internal static class NativeMouseInput
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "입력 감시를 준비하지 못했습니다.");
             try
             {
+                watchedOwner = background ? owner.Handle : IntPtr.Zero;
+                backgroundWatch = background;
                 mouseHook = SetWindowsHookEx(WhMouseLl, MouseHookCallback, module, 0);
                 if (mouseHook == IntPtr.Zero)
                     throw new Win32Exception(Marshal.GetLastWin32Error(), "마우스 입력 감시를 시작하지 못했습니다.");
@@ -172,6 +183,8 @@ internal static class NativeMouseInput
                 if (UnhookWindowsHookEx(keyboardHook)) keyboardHook = IntPtr.Zero;
                 else { failed = true; error = Marshal.GetLastWin32Error(); }
             }
+            watchedOwner = IntPtr.Zero;
+            backgroundWatch = false;
             // Keep a failed handle and the static delegates rooted, so another
             // cleanup can be attempted and a new watch cannot silently replace it.
             if (failed) throw new Win32Exception(error, "입력 감시를 종료하지 못해 기능을 중지했습니다.");
@@ -201,16 +214,46 @@ internal static class NativeMouseInput
         return message != WmMouseMove;
     }
 
+    internal static bool IsScopedMouseInterference(long message, bool background, bool targetsOwner, bool ownerForeground = false)
+    { return IsInterferingMouseMessage(message) && (!background || targetsOwner || ownerForeground && (message == 0x020A || message == 0x020E)); }
+
+    internal static bool IsScopedKeyboardInterference(bool background, bool ownerForeground)
+    { return !background || ownerForeground; }
+
+    internal static bool IsStopKeyDown(long message, int virtualKey)
+    { return (message == WmKeyDown || message == WmSysKeyDown) && virtualKey == VkF8; }
+
+    internal static bool IsBackgroundSwitchKey(int virtualKey, bool altHeld)
+    {
+        // Let the user move to another app through Alt+Tab. Ordinary Tab and
+        // every other content key remain interference while this owner is active.
+        return virtualKey == 0x12 || virtualKey == 0xA4 || virtualKey == 0xA5 || (virtualKey == 0x09 && altHeld);
+    }
+
+    static bool MouseTargetsWatchedOwner(IntPtr data)
+    {
+        if (watchedOwner == IntPtr.Zero) throw new InvalidOperationException("입력 감시 대상 창이 없습니다.");
+        // Use the current event's point only for hit testing. Coordinates and
+        // event details are never retained. Child WebView windows resolve to
+        // the owner; a click switching to another app does not interrupt.
+        var point = new NativePoint(new Point(Marshal.ReadInt32(data), Marshal.ReadInt32(data, 4)));
+        IntPtr hit = WindowFromPoint(point);
+        return hit != IntPtr.Zero && GetAncestor(hit, RootWindow) == watchedOwner;
+    }
+
     static IntPtr ObserveMouse(int code, IntPtr message, IntPtr data)
     {
         if (code >= 0 && watchingInput)
         {
             try
             {
-                // Read only MSLLHOOKSTRUCT.dwExtraInfo: never copy coordinates,
-                // button information, timestamps or any event history.
-                if (!HasOwnMarker(data, IntPtr.Size == 8 ? 24 : 20) && IsInterferingMouseMessage(message.ToInt64()))
-                    Interlocked.Increment(ref foreignInputVersion);
+                long kind = message.ToInt64();
+                if (!HasOwnMarker(data, IntPtr.Size == 8 ? 24 : 20) && IsInterferingMouseMessage(kind))
+                {
+                    bool targetsOwner = !backgroundWatch || MouseTargetsWatchedOwner(data);
+                    if (IsScopedMouseInterference(kind, backgroundWatch, targetsOwner, backgroundWatch && GetForegroundWindow() == watchedOwner))
+                        Interlocked.Increment(ref foreignInputVersion);
+                }
             }
             catch { Interlocked.Increment(ref foreignInputVersion); Interlocked.Exchange(ref stopLatched, 1); }
         }
@@ -227,9 +270,16 @@ internal static class NativeMouseInput
                 // Only an F8-down boolean is retained; no key/text log is kept.
                 if (!HasOwnMarker(data, 16))
                 {
-                    Interlocked.Increment(ref foreignInputVersion);
+                    int virtualKey = Marshal.ReadInt32(data);
+                    // KBDLLHOOKSTRUCT.flags has the event's Alt context. Using
+                    // it avoids the timing ambiguity of async key state inside
+                    // a low-level callback; no key or modifier history is kept.
+                    bool switchKey = backgroundWatch && IsBackgroundSwitchKey(virtualKey, (Marshal.ReadInt32(data, 8) & 0x20) != 0);
+                    bool ownerForeground = !backgroundWatch || GetForegroundWindow() == watchedOwner;
+                    if (!switchKey && IsScopedKeyboardInterference(backgroundWatch, ownerForeground))
+                        Interlocked.Increment(ref foreignInputVersion);
                     long kind = message.ToInt64();
-                    if ((kind == WmKeyDown || kind == WmSysKeyDown) && Marshal.ReadInt32(data) == VkF8)
+                    if (IsStopKeyDown(kind, virtualKey))
                         Interlocked.Exchange(ref stopLatched, 1);
                 }
             }

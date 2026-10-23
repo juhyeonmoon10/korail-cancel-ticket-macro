@@ -144,14 +144,14 @@ internal sealed partial class MainWindow
         try
         {
             if (NativeMouseInput.IsStopPressed()) { StopMouseBooking("F8로 중지했습니다."); return; }
-            if (!NativeMouseInput.IsForeground(this) || WindowState == FormWindowState.Minimized)
+            if (!InputWindowReady())
             { status.Text = "일시정지 · 창을 앞에 두고 ‘계속’을 누르세요."; return; }
             uint input = NativeMouseInput.ForeignInputVersion();
             await ValidateMouseResume(run);
             if (run != mouseGeneration || closing || !mousePaused || !mouseBookingActive) return;
             if (!AutomationAvailable()) return;
             if (NativeMouseInput.IsStopPressed()) { StopMouseBooking("F8로 중지했습니다."); return; }
-            if (NativeMouseInput.ForeignInputVersion() != input || !NativeMouseInput.IsForeground(this))
+            if (NativeMouseInput.ForeignInputVersion() != input || !InputWindowReady())
             { status.Text = "재개 확인 중 입력이 감지되었습니다. 일시정지를 유지합니다. 준비되면 ‘계속’을 누르세요."; return; }
             sleepPrevention.Start(); ShowSleepStatus(false);
             mouseLastInput = input;

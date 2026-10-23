@@ -88,7 +88,7 @@ internal sealed partial class MainWindow
             if (Program.SelfTest || Program.ManualDiagnostic) throw new InvalidOperationException("연습·진단 모드에서는 실제 예약 순서를 실행하지 않습니다.");
             if (!settings.Telegram.Enabled || settings.Telegram.Validate() != null)
                 throw new InvalidOperationException("설정에서 내 텔레그램 연결을 저장하고 알림을 켜세요.");
-            if (!NativeMouseInput.IsForeground(this)) throw new InvalidOperationException("앱을 맨 앞으로 열고 시작하세요.");
+            if (!InputWindowReady()) throw new InvalidOperationException("도우미 창을 열고 시작하세요. 마우스 모드에서는 맨 앞으로 표시하세요.");
             var jobs = QueueStore().GetAll();
             if (!jobs.Any(job => job.State == BookingQueueState.Pending)) throw new InvalidOperationException("실행할 대기 항목을 먼저 추가하세요.");
             if (jobs.Any(job => job.State == BookingQueueState.NeedsReview)) throw new InvalidOperationException("확인이 필요한 항목을 먼저 예약 관리에서 확인하세요.");
@@ -101,7 +101,7 @@ internal sealed partial class MainWindow
     void BeginNextQueuedBooking()
     {
         if (!queueRunning || closing) return;
-        if (!NativeMouseInput.IsForeground(this)) throw new InvalidOperationException("창이 바뀌어 다음 예약을 시작하지 않았습니다.");
+        if (!InputWindowReady()) throw new InvalidOperationException("입력 대상 창이 비활성 상태라 다음 예약을 시작하지 않았습니다.");
         var pending = QueueStore().GetAll().FirstOrDefault(job => job.State == BookingQueueState.Pending);
         if (pending == null)
         {
@@ -122,7 +122,7 @@ internal sealed partial class MainWindow
         queueProgress.Reset(); queueActions = 0; queueReaderPage = -1;
         queueDeadline = DateTime.UtcNow.AddSeconds(30); queueNextInput = DateTime.UtcNow;
         sleepPrevention.Start(); ShowSleepStatus(false);
-        NativeMouseInput.BeginInputWatch(); queueInputWatching = true;
+        BeginAutomationInputWatch(); queueInputWatching = true;
         queueInputVersion = NativeMouseInput.ForeignInputVersion();
         if (queueTimer == null)
         {
@@ -200,7 +200,7 @@ internal sealed partial class MainWindow
     {
         if (generation < 0 || generation != queueGeneration || !queueRunning || queueStage != "notifying") return;
         sleepPrevention.Start(); ShowSleepStatus(false);
-        NativeMouseInput.BeginInputWatch(); queueInputWatching = true;
+        BeginAutomationInputWatch(); queueInputWatching = true;
         queueInputVersion = NativeMouseInput.ForeignInputVersion();
         queueDeadline = DateTime.UtcNow.AddSeconds(60); queueTimer.Start();
     }
@@ -209,7 +209,7 @@ internal sealed partial class MainWindow
     void CheckQueueInput()
     {
         if (NativeMouseInput.IsStopPressed()) throw new InvalidOperationException("F8로 중지했습니다.");
-        if (!NativeMouseInput.IsForeground(this) || WindowState == FormWindowState.Minimized)
+        if (!InputWindowReady())
             throw new InvalidOperationException("창이 바뀌어 조회 조건 입력을 중지했습니다.");
         if (NativeMouseInput.ForeignInputVersion() != queueInputVersion)
             throw new InvalidOperationException("직접 입력이 감지돼 조회 조건 입력을 중지했습니다.");
@@ -317,7 +317,8 @@ internal sealed partial class MainWindow
             if (y < 8 || y >= height - 8)
             {
                 if (++queueActions > 100) throw new InvalidOperationException("다음 조회의 입력 단계가 너무 많아 중지했습니다.");
-                NativeMouseInput.Wheel(this, view.PointToScreen(new Point(view.ClientSize.Width / 2, view.ClientSize.Height / 2)), y < 8 ? 360 : -360);
+                await WheelAutomation(y < 8 ? 360 : -360, run, true);
+                if (!QueueQueryCurrent(run)) return;
                 queueNextInput = DateTime.UtcNow.AddMilliseconds(600); return;
             }
             if (id == queueLastAction) return; // Wait for the observed control state to change; never double-submit.
@@ -333,8 +334,9 @@ internal sealed partial class MainWindow
             if (!String.IsNullOrEmpty(Get(freshAction, "picker"))) queuePicker = Get(freshAction, "picker");
             // Keep ownership until the popup is observed closed. A slow closing
             // animation must not turn our own picker into an unknown user popup.
-            if (kind == "type") NativeMouseInput.ReplaceStationText(this, Get(freshAction, "text"));
-            else NativeMouseInput.Click(this, view.PointToScreen(new Point((int)Math.Round(x * view.ClientSize.Width / width), (int)Math.Round(y * view.ClientSize.Height / height))));
+            if (kind == "type") await TypeStationAutomation(Get(freshAction, "text"), run);
+            else await ClickAutomation(x, y, width, height, run, true);
+            if (!QueueQueryCurrent(run)) return;
             queueNextInput = DateTime.UtcNow.AddMilliseconds(900);
             status.Text = "다음 예약의 날짜·구간 입력 중 · F8 중지";
         }

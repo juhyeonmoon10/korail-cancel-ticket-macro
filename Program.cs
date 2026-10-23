@@ -18,8 +18,8 @@ using Microsoft.Win32;
 
 [assembly: AssemblyTitle("코레일 한 장 도우미 PC")]
 [assembly: AssemblyDescription("개인용 열차 예매 보조 도구 - 비공식")]
-[assembly: AssemblyVersion("0.9.1.0")]
-[assembly: AssemblyFileVersion("0.9.1.0")]
+[assembly: AssemblyVersion("0.10.0.0")]
+[assembly: AssemblyFileVersion("0.10.0.0")]
 
 internal static class Program
 {
@@ -46,7 +46,7 @@ internal static class Program
             if (!created) { MessageBox.Show("이미 실행 중입니다. 열린 코레일 도우미 창을 사용하세요.", "코레일 한 장 도우미"); return 2; }
             try
             {
-                BundleRoot = Path.Combine(DataRoot, "app-0.9.1");
+                BundleRoot = Path.Combine(DataRoot, "app-0.10.0");
                 Extract();
                 AppDomain.CurrentDomain.AssemblyResolve += delegate(object sender, ResolveEventArgs eventArgs)
                 {
@@ -129,7 +129,7 @@ internal sealed partial class MainWindow : Form
     TaskCompletionSource<bool> loadWaiter;
     public MainWindow()
     {
-        Text = "코레일 한 장 도우미 PC 0.9.1 · " + (Program.ManualDiagnostic ? "수동 진단 · 자동 기능 꺼짐" : "비공식");
+        Text = "코레일 한 장 도우미 PC 0.10.0 · " + (Program.ManualDiagnostic ? "수동 진단 · 자동 기능 꺼짐" : "비공식");
         settings = AppSettings.Load(Path.Combine(Program.DataRoot, "settings.json"));
         ClientSize = new Size(1320, 900); MinimumSize = new Size(1000, 760);
         StartPosition = FormStartPosition.CenterScreen; Font = new Font("맑은 고딕", 10);
@@ -148,7 +148,7 @@ internal sealed partial class MainWindow : Form
         };
         SystemEvents.PowerModeChanged += PowerChanged;
         SystemEvents.SessionSwitch += SessionChanged;
-        FormClosing += delegate { StopBookingQueue("프로그램을 닫아 예약 순서를 중지했습니다."); StopMouseBooking(null); closing = true; activeDocument = false; lease.Reset(); SystemEvents.PowerModeChanged -= PowerChanged; SystemEvents.SessionSwitch -= SessionChanged; };
+        FormClosing += delegate { StopBookingQueue("프로그램을 닫아 예약 순서를 중지했습니다."); StopMouseBooking(null); closing = true; ClearDeferredPageNotice(); activeDocument = false; lease.Reset(); SystemEvents.PowerModeChanged -= PowerChanged; SystemEvents.SessionSwitch -= SessionChanged; };
         FormClosed += delegate { ReleaseSleepPrevention(); view.Dispose(); };
         Shown += async delegate {
             if (!Program.SelfTest && !Program.Demo && !Program.ManualDiagnostic && !settings.Telegram.HasCredentials)
@@ -256,7 +256,7 @@ internal sealed partial class MainWindow : Form
             MessageBox.Show("브라우저를 시작할 수 없습니다.\nMicrosoft Edge WebView2 Runtime 설치 여부를 확인하세요.\n\nhttps://developer.microsoft.com/microsoft-edge/webview2/\n\n" + ex.Message, "시작 실패");
         }
     }
-    void Navigate(string url) { if (ready && !closing) view.CoreWebView2.Navigate(url); }
+    void Navigate(string url) { if (ready && !closing) { ClearDeferredPageNotice(); view.CoreWebView2.Navigate(url); } }
     static bool DifferentPagePath(string previous, string current)
     {
         Uri before, after;
@@ -796,6 +796,7 @@ internal sealed partial class MainWindow : Form
             Assert((await EvalString("document.getElementById('result').textContent")).Contains("0회") && (await EvalString("document.getElementById('korail-one-helper').shadowRoot.getElementById('status').textContent")).Contains("갱신"), "unconfirmed refresh: timeout without click");
             await RunMouseMoreTests();
             await RunRefreshLimitTests();
+            await RunBackgroundInputTests();
             await RunMousePauseTests();
             FinishTests(null);
         }

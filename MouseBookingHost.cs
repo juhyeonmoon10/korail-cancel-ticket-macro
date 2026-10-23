@@ -144,7 +144,7 @@ internal sealed partial class MainWindow
             if (startRun != mouseGeneration || closing) return;
             if (enableRefresh && !await PrepareMouseRefresh(false, startRun)) return;
             if (startRun != mouseGeneration || closing) return;
-            if (!NativeMouseInput.IsForeground(this)) throw new InvalidOperationException("이 프로그램 창을 맨 앞으로 표시한 후 시작하세요.");
+            if (!InputWindowReady()) throw new InvalidOperationException("도우미 창을 열고 시작하세요. 마우스 모드에서는 맨 앞으로 표시하세요.");
             // Fold the helper only; the official page's controls are never activated through JavaScript.
             await view.CoreWebView2.ExecuteScriptAsync("(() => {const r=document.getElementById('korail-one-helper')?.shadowRoot;const m=r?.querySelector('main');if(m){m.hidden=true;r.getElementById('fold').textContent='+';}})()");
             if (startRun != mouseGeneration || closing) return;
@@ -170,7 +170,7 @@ internal sealed partial class MainWindow
             var attempt = store.Get(attemptId);
             if (attempt == null || (attempt.State != BookingAttemptState.Submitted && attempt.State != BookingAttemptState.Unknown) || attempt.SubmittedUtc == null)
                 throw new InvalidOperationException("실제로 제출한 뒤 결과가 확인되지 않은 예약 기록만 다시 확인할 수 있습니다.");
-            if (!NativeMouseInput.IsForeground(this)) throw new InvalidOperationException("이 프로그램 창을 맨 앞으로 표시한 후 확인하세요.");
+            if (!InputWindowReady()) throw new InvalidOperationException("도우미 창을 열고 확인하세요. 마우스 모드에서는 맨 앞으로 표시하세요.");
             mouseDemo = false; mouseCompletionRecheck = true;
             mouseStore = store; mouseAttemptId = attempt.Id; mouseTarget = attempt.Target.Copy(); mouseTargets = null;
             mouseSubmitted = true; mousePhase = "submitted"; mouseNoticeCount = 0; mouseScrollCount = 0;
@@ -215,7 +215,7 @@ internal sealed partial class MainWindow
         {
             if (NativeMouseInput.IsStopPressed()) throw new InvalidOperationException("F8로 중지했습니다.");
             if (mousePaused) { CheckMousePauseDeadline(); return; }
-            if (WindowState == FormWindowState.Minimized || !NativeMouseInput.IsForeground(this)) { InterruptMouseBooking("창 전환 또는 최소화"); return; }
+            if (!InputWindowReady()) { InterruptMouseBooking("입력 대상 창 비활성 또는 최소화"); return; }
             if (NativeMouseInput.ForeignInputVersion() != mouseLastInput) { InterruptMouseBooking("클릭·스크롤 또는 키 입력 감지"); return; }
             if (mouseReadAll || mouseMorePending) { await TickMouseMore(run); return; }
             if (mouseRefreshOnly || mouseRefreshPending)
@@ -320,12 +320,11 @@ internal sealed partial class MainWindow
                     if ((DateTime.UtcNow - mousePhaseStarted).TotalSeconds > 30) throw new InvalidOperationException("30초 확인 기한이 지나 안내 스크롤을 중지했습니다. 공식 예약 결과를 직접 확인하세요.");
                 }
                 if (NativeMouseInput.ForeignInputVersion() != mouseLastInput) { InterruptMouseBooking("스크롤 전 직접 입력 감지"); return; }
-                if (WindowState == FormWindowState.Minimized || !NativeMouseInput.IsForeground(this)) { InterruptMouseBooking("스크롤 전 창 전환"); return; }
+                if (!InputWindowReady()) { InterruptMouseBooking("스크롤 대상 창 비활성"); return; }
                 // Expanded result lists can be much taller than the first page.
                 if (++mouseScrollCount > (mousePhase == "select" ? 100 : 8)) throw new InvalidOperationException("버튼을 화면에 표시하지 못했습니다.");
-                Point center = view.PointToScreen(new Point(view.ClientSize.Width / 2, view.ClientSize.Height / 2));
-                if (kind == "receipt-notice") siteDiagnostics.AddAction("native-receipt-scroll");
-                NativeMouseInput.Wheel(this, center, y < inputMargin ? 360 : -360);
+                if (kind == "receipt-notice") siteDiagnostics.AddAction(BackgroundInputEnabled ? "page-receipt-scroll" : "native-receipt-scroll");
+                await WheelAutomation(y < inputMargin ? 360 : -360, run);
                 return;
             }
             // Re-read immediately before input, rejecting rerenders and displaced controls.
@@ -340,9 +339,8 @@ internal sealed partial class MainWindow
             if (kind == "seat" && BookingSelection.MatchSelected(ObjectValue(fresh, "selectedTarget"), mouseTargets).Key != candidate.Key)
                 return;
             if (NativeMouseInput.ForeignInputVersion() != mouseLastInput) { InterruptMouseBooking("클릭 전 직접 입력 감지"); return; }
-            if (WindowState == FormWindowState.Minimized || !NativeMouseInput.IsForeground(this)) { InterruptMouseBooking("클릭 전 창 전환"); return; }
+            if (!InputWindowReady()) { InterruptMouseBooking("클릭 대상 창 비활성"); return; }
             if (mousePhase != "select" && (DateTime.UtcNow - mousePhaseStarted).TotalSeconds > 30) throw new InvalidOperationException("30초 확인 기한이 지나 추가 입력을 중지했습니다. 공식 예약 결과를 직접 확인하세요.");
-            var screen = view.PointToScreen(new Point((int)Math.Round(x * view.ClientSize.Width / width), (int)Math.Round(y * view.ClientSize.Height / height)));
             if (kind == "reserve")
             {
                 var attempt = mouseStore.Begin(mouseTarget); mouseAttemptId = attempt.Id;
@@ -360,8 +358,8 @@ internal sealed partial class MainWindow
             }
             else if (++mouseNoticeCount > 3) throw new InvalidOperationException("예약 안내가 반복되어 중지했습니다.");
             if (!AutomationAvailable()) { StopMouseBooking(status.Text); return; }
-            siteDiagnostics.AddAction(kind == "seat" ? "native-seat" : kind == "notice" ? "native-notice" : kind == "receipt-notice" ? "native-receipt-notice" : "native-reserve");
-            NativeMouseInput.Click(this, screen);
+            siteDiagnostics.AddAction((BackgroundInputEnabled ? "page-" : "native-") + (kind == "seat" ? "seat" : kind == "notice" ? "notice" : kind == "receipt-notice" ? "receipt-notice" : "reserve"));
+            await ClickAutomation(x, y, width, height, run);
             await Task.Delay(400);
         }
         catch (Exception ex) { if (run == mouseGeneration) StopMouseBooking(ex.Message); }
@@ -378,6 +376,25 @@ internal sealed partial class MainWindow
         if (mouseBookingActive && !automatic) StopMouseBooking("안내문을 직접 확인해야 하므로 중지했습니다.");
         int run = mouseGeneration;
         var deferral = e.GetDeferral();
+        if (BackgroundInputEnabled)
+        {
+            if (automatic && ++mouseNoticeCount <= 3 && InputWindowReady() && AutomationAvailable() &&
+                !NativeMouseInput.IsStopPressed() && NativeMouseInput.ForeignInputVersion() == mouseLastInput)
+            {
+                try { e.Accept(); siteDiagnostics.AddAction("page-stop-notice"); }
+                finally { deferral.Complete(); }
+                return;
+            }
+            StopBookingQueue("페이지 안내를 직접 확인해야 하므로 중지했습니다.");
+            StopMouseBooking("페이지 안내를 직접 확인해야 하므로 중지했습니다.");
+            DeferPageNotice(e, deferral);
+            return;
+        }
+        ShowPageScriptDialog(e, deferral, automatic, run);
+    }
+
+    void ShowPageScriptDialog(CoreWebView2ScriptDialogOpeningEventArgs e, CoreWebView2Deferral deferral, bool automatic, int run)
+    {
         try
         {
             if (automatic && ++mouseNoticeCount > 3) { automatic = false; StopMouseBooking("정차 안내가 반복되어 중지했습니다."); }

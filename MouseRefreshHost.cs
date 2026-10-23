@@ -97,7 +97,7 @@ internal sealed partial class MainWindow
             mouseReaderNavigation = -1; mouseScrollCount = 0;
             if (!await PrepareMouseRefresh(true, run)) return;
             if (run != mouseGeneration || closing) return;
-            if (!NativeMouseInput.IsForeground(this)) throw new InvalidOperationException("프로그램 창을 맨 앞으로 표시한 후 시작하세요.");
+            if (!InputWindowReady()) throw new InvalidOperationException("도우미 창을 열고 시작하세요. 마우스 모드에서는 맨 앞으로 표시하세요.");
             await view.CoreWebView2.ExecuteScriptAsync("(() => {const r=document.getElementById('korail-one-helper')?.shadowRoot;const m=r?.querySelector('main');if(m){m.hidden=true;r.getElementById('fold').textContent='+';}})()");
             if (run != mouseGeneration || closing) return;
             mouseStarted = mousePhaseStarted = DateTime.UtcNow;
@@ -156,9 +156,9 @@ internal sealed partial class MainWindow
         if (y < inputMargin || y >= height - inputMargin)
         {
             if (NativeMouseInput.ForeignInputVersion() != mouseLastInput) { InterruptMouseBooking("스크롤 전 직접 입력 감지"); return; }
-            if (WindowState == FormWindowState.Minimized || !NativeMouseInput.IsForeground(this)) { InterruptMouseBooking("스크롤 전 창 전환"); return; }
+            if (!InputWindowReady()) { InterruptMouseBooking("스크롤 대상 창 비활성"); return; }
             if (++mouseScrollCount > 100) throw new InvalidOperationException("조회 버튼을 화면에 표시하지 못했습니다.");
-            NativeMouseInput.Wheel(this, view.PointToScreen(new Point(view.ClientSize.Width / 2, view.ClientSize.Height / 2)), y < inputMargin ? 360 : -360);
+            await WheelAutomation(y < inputMargin ? 360 : -360, run);
             return;
         }
         Point origin = view.PointToScreen(Point.Empty); Size viewport = view.ClientSize;
@@ -181,15 +181,15 @@ internal sealed partial class MainWindow
             origin != view.PointToScreen(Point.Empty) || viewport != view.ClientSize) return;
         if (NativeMouseInput.IsStopPressed()) throw new InvalidOperationException("F8로 중지했습니다.");
         if (NativeMouseInput.ForeignInputVersion() != mouseLastInput) { InterruptMouseBooking("재조회 전 직접 입력 감지"); return; }
-        if (WindowState == FormWindowState.Minimized || !NativeMouseInput.IsForeground(this)) { InterruptMouseBooking("재조회 전 창 전환"); return; }
+        if (!InputWindowReady()) { InterruptMouseBooking("재조회 대상 창 비활성"); return; }
         mouseRefreshRevision = NumberValue(fresh, "revision"); mouseRefreshBaseline = Get(fresh, "fingerprint");
         mouseRefreshSawChange = false; mouseRefreshStableKey = null; mouseRefreshPending = true;
         mouseRefreshCount++; mouseRefreshSent = DateTime.UtcNow; mouseScrollCount = 0;
         RefreshLog("attempt", "count=" + mouseRefreshCount);
-        var screen = view.PointToScreen(new Point((int)Math.Round(x * view.ClientSize.Width / width), (int)Math.Round(y * view.ClientSize.Height / height)));
         if (!AutomationAvailable()) { StopMouseBooking(status.Text); return; }
-        siteDiagnostics.AddAction("native-query");
-        NativeMouseInput.Click(this, screen);
+        siteDiagnostics.AddAction(BackgroundInputEnabled ? "page-query" : "native-query");
+        await ClickAutomation(x, y, width, height, run);
+        if (run != mouseGeneration || !mouseBookingActive) return;
         RefreshLog("input_sent", "count=" + mouseRefreshCount);
     }
 

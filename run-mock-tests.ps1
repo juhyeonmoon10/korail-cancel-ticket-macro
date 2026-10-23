@@ -81,4 +81,10 @@ $inputArgs = $commonArgs + @(('/out:' + $inputExe), (Join-Path $sourceRoot 'Nati
 if ($LASTEXITCODE -ne 0) { throw 'Native input policy test compilation failed.' }
 & $inputExe
 if ($LASTEXITCODE -ne 0) { throw 'Native input policy tests failed.' }
+$pageInputExe = Join-Path $binRoot 'PageInputDispatcherTests.exe'
+$pageInputArgs = $commonArgs + @(('/out:' + $pageInputExe), (Join-Path $sourceRoot 'PageInputDispatcher.cs'), (Join-Path $sourceRoot 'PageInputDispatcherTests.cs'))
+& $compiler @pageInputArgs
+if ($LASTEXITCODE -ne 0) { throw 'Page input dispatcher test compilation failed.' }
+& $pageInputExe
+if ($LASTEXITCODE -ne 0) { throw 'Page input dispatcher tests failed.' }
 Write-Output 'All C# tests passed, including a short native Windows sleep-prevention request/release. No real Telegram or Korail requests were made.'

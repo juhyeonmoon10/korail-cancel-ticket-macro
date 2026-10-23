@@ -18,7 +18,7 @@ internal sealed partial class MainWindow
         // each caller's existing catch path can release a partial start.
         sleepPrevention.Start();
         ShowSleepStatus(false);
-        NativeMouseInput.BeginInputWatch();
+        BeginAutomationInputWatch();
         mouseLastInput = NativeMouseInput.ForeignInputVersion();
         mouseBookingTimer.Start();
         mouseBookingActive = true;
