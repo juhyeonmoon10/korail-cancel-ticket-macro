@@ -1,8 +1,10 @@
-# 코레일 한 장 도우미 PC
+# 코레일 취소표 매크로
 
-Windows에서 공식 코레일 화면을 조작해, 선택한 열차의 미결제 예약을 진행하고 본인의 Telegram 봇으로 알리는 **비공식 개인용 프로그램**입니다. 날짜·구간·열차·좌석 등급과 Telegram 수신자는 직접 지정합니다. 여러 후보 중 **한 편만 예약**할지, 선택한 **모든 열차를 각각 예약**할지 정하고, 다음에 예약할 여정을 **예약 순서**에 미리 넣을 수 있습니다. 각 예약은 총 1명이며 결제는 자동으로 하지 않습니다.
+코레일·KTX 취소표를 조회하고, 선택한 열차의 미결제 예약과 텔레그램 알림을 돕는 **Windows용 비공식 개인용 매크로**입니다. 공식 코레일 화면에서 동작하며, 날짜·구간·열차·좌석 등급과 Telegram 수신자는 직접 지정합니다. 여러 후보 중 **한 편만 예약**할지, 선택한 **모든 열차를 각각 예약**할지 정하고, 다음에 예약할 여정을 **예약 순서**에 미리 넣을 수 있습니다. 각 예약은 총 1명이며 결제는 자동으로 하지 않습니다.
 
-**[안정 버전 0.9.0 다운로드](https://github.com/juhyeonmoon10/korail-one-helper/releases/tag/v0.9.0)** · **[기존 실험판 0.11.1 다운로드](https://github.com/juhyeonmoon10/korail-one-helper/releases/tag/v0.11.1)** · **[0.11.2 개발 소스 · 실행 검증 보류](https://github.com/juhyeonmoon10/korail-one-helper/tree/main)** · [자세한 사용 안내](docs/USAGE.txt) · [검증 기록](docs/VERIFICATION.txt)
+프로그램 창에는 기존 이름 **‘코레일 한 장 도우미 PC’**가 표시되며, 실행 파일은 `KorailOneHelper.exe`입니다.
+
+**[안정 버전 0.9.0 다운로드](https://github.com/juhyeonmoon10/korail-cancel-ticket-macro/releases/tag/v0.9.0)** · **[기존 실험판 0.11.1 다운로드](https://github.com/juhyeonmoon10/korail-cancel-ticket-macro/releases/tag/v0.11.1)** · **[0.11.2 개발 소스 · 실행 검증 보류](https://github.com/juhyeonmoon10/korail-cancel-ticket-macro/tree/main)** · [자세한 사용 안내](docs/USAGE.txt) · [검증 기록](docs/VERIFICATION.txt)
 
 안정 배포는 **0.9.0**, 배포된 최신 실험판은 **0.11.1**을 유지합니다. **0.11.2는 개발 소스만 공개하며 EXE 배포를 보류합니다.** 새 EXE가 Windows 코드 무결성 정책의 서명 요구 조건으로 실행 차단되어, 변경 후 EXE의 실행 검사를 완료하지 못했습니다. 기존 **0.11.1에서는 상단 ‘동시 작업 (실험)’을 직접 체크**해야 다른 앱과 함께 사용할 수 있습니다.
 
