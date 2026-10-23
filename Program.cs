@@ -18,8 +18,8 @@ using Microsoft.Win32;
 
 [assembly: AssemblyTitle("코레일 한 장 도우미 PC")]
 [assembly: AssemblyDescription("개인용 열차 예매 보조 도구 - 비공식")]
-[assembly: AssemblyVersion("0.9.0.0")]
-[assembly: AssemblyFileVersion("0.9.0.0")]
+[assembly: AssemblyVersion("0.9.1.0")]
+[assembly: AssemblyFileVersion("0.9.1.0")]
 
 internal static class Program
 {
@@ -46,7 +46,7 @@ internal static class Program
             if (!created) { MessageBox.Show("이미 실행 중입니다. 열린 코레일 도우미 창을 사용하세요.", "코레일 한 장 도우미"); return 2; }
             try
             {
-                BundleRoot = Path.Combine(DataRoot, "app-0.9.0");
+                BundleRoot = Path.Combine(DataRoot, "app-0.9.1");
                 Extract();
                 AppDomain.CurrentDomain.AssemblyResolve += delegate(object sender, ResolveEventArgs eventArgs)
                 {
@@ -129,7 +129,7 @@ internal sealed partial class MainWindow : Form
     TaskCompletionSource<bool> loadWaiter;
     public MainWindow()
     {
-        Text = "코레일 한 장 도우미 PC 0.9.0 · " + (Program.ManualDiagnostic ? "수동 진단 · 자동 기능 꺼짐" : "비공식");
+        Text = "코레일 한 장 도우미 PC 0.9.1 · " + (Program.ManualDiagnostic ? "수동 진단 · 자동 기능 꺼짐" : "비공식");
         settings = AppSettings.Load(Path.Combine(Program.DataRoot, "settings.json"));
         ClientSize = new Size(1320, 900); MinimumSize = new Size(1000, 760);
         StartPosition = FormStartPosition.CenterScreen; Font = new Font("맑은 고딕", 10);

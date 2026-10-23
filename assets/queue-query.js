@@ -175,7 +175,13 @@
       if (!visibleHours.length) return unknown('시간 선택 목록의 현재 위치를 확인하지 못했습니다.');
       const values = visibleHours.map(node => Number(text(node).slice(0, 2))), wanted = Number(wantedHour.slice(0, 2));
       const direction = wanted < Math.min(...values) ? 'prev' : wanted > Math.max(...values) ? 'next' : '';
-      return direction ? click(onlyShown(modal, '.timeSelect .slideWrap > .slick-' + direction), 'date-hours:' + direction + ':' + Math.min(...values) + '-' + Math.max(...values), doc) : blocked('조회 시작 시간이 비활성 상태입니다.');
+      if (!direction) return blocked('조회 시작 시간이 비활성 상태입니다.');
+      const arrow = onlyShown(modal, '.timeSelect .slideWrap > .slick-' + direction);
+      // The public picker removes its hour arrows in the compact layout. A
+      // visible hour still works above; only an inaccessible hour needs resize.
+      if (!arrow && doc.defaultView.innerWidth <= 1024)
+        return blocked('창이 좁아 시간 이동 버튼이 숨겨졌습니다. 도우미 창을 최대화하거나 넓힌 뒤 예약 관리에서 이 항목을 다시 시작하세요.');
+      return click(arrow, 'date-hours:' + direction + ':' + Math.min(...values) + '-' + Math.max(...values), doc);
     }
     const apply = all(modal, '.btn_wrap > button.btn_bn-blue').filter(node => shown(node) && text(node) === '적용');
     return click(apply.length === 1 ? apply[0] : null, 'date-apply:' + target.date + ':' + wantedHour.slice(0, 2) + ':00', doc, { closePicker: true });

@@ -88,7 +88,9 @@ internal sealed partial class MainWindow
             string raw = await view.CoreWebView2.ExecuteScriptAsync("({selection:window.KorailDesktopHelper.snapshot(),query:window.KorailSiteAdapter.query(document)})");
             if (run != mouseGeneration || closing || !mousePaused) return;
             var data = json.Deserialize<System.Collections.Generic.Dictionary<string, object>>(raw);
-            var current = BookingSelection.FromSnapshot(ObjectValue(data, "selection"), ObjectValue(data, "query"));
+            var current = queueRunning
+                ? QueuedMouseResumeSelection(ObjectValue(data, "query"))
+                : BookingSelection.FromSnapshot(ObjectValue(data, "selection"), ObjectValue(data, "query"));
             if (mouseTargets == null || current.Count != mouseTargets.Count || current.Where((target, i) => target.Key != mouseTargets[i].Key || target.Train != mouseTargets[i].Train).Any())
                 throw new InvalidOperationException("일시정지 중 선택한 열차나 조건이 바뀌었습니다. 다시 적용하고 시작하세요.");
             if (!mouseDemo && mouseTargets.Any(target => String.CompareOrdinal(target.Date, DateTime.Today.ToString("yyyy-MM-dd")) < 0))
@@ -111,6 +113,26 @@ internal sealed partial class MainWindow
             }
         }
         CheckMousePauseDeadline();
+    }
+
+    System.Collections.Generic.List<BookingTarget> QueuedMouseResumeSelection(System.Collections.Generic.Dictionary<string, object> query)
+    {
+        if (!queueRunning || queueStage != "booking" || queueJob == null || !mouseAutoRefresh || mouseRefreshOnly || String.IsNullOrEmpty(mouseRefreshQuery))
+            throw new InvalidOperationException("재개할 예약 순서와 고정 조회 조건을 확인하지 못했습니다.");
+        var current = QueueStore().Get(queueJob.Id);
+        if (current == null || current.State != BookingQueueState.Running || current.AttemptId != null || current.QueryJson != queueJob.QueryJson ||
+            mouseTargets == null || current.Targets.Count != mouseTargets.Count ||
+            current.Targets.Where((target, i) => target.Key != mouseTargets[i].Key || target.Train != mouseTargets[i].Train).Any())
+            throw new InvalidOperationException("일시정지 중 예약 순서의 열차나 진행 상태가 바뀌었습니다. 예약 기록을 확인하세요.");
+        // A queued candidate can still be below More, and the helper's ordinary
+        // journey filter can differ from this job. Neither should erase the
+        // explicit saved queue intent. Bind resume to the effective query frozen
+        // at native start, including a legitimately advanced start time.
+        var frozen = json.Deserialize<System.Collections.Generic.Dictionary<string, object>>(mouseRefreshQuery);
+        frozen["supported"] = true;
+        if (SavedTrainSelection.QueryText(query, current.Targets) != SavedTrainSelection.QueryText(frozen, current.Targets))
+            throw new InvalidOperationException("일시정지 중 예약 순서의 조회 조건이 바뀌었습니다. 다시 조회하세요.");
+        return current.Targets.Select(target => target.Copy()).ToList();
     }
 
     async Task ResumeMouseBooking()

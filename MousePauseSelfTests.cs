@@ -111,6 +111,8 @@ internal sealed partial class MainWindow
             Assert(!mouseBookingActive && !mousePaused && mouseStore.Get(submitted.Id).State == BookingAttemptState.Unknown,
                 "pause: interruption after submission stops and retains an unknown result without retry");
 
+            await RunQueuedMousePauseTests();
+
             // Keep the terminal block-latch case last: the process must not
             // clear a confirmed block merely to make another test possible.
             await PrepareMousePauseFixture(false, false);
@@ -140,6 +142,100 @@ internal sealed partial class MainWindow
             mouseRefreshNext = mouseRefreshSent = mouseRefreshStableSince = default(DateTime);
             mouseRefreshIntervalSeconds = savedInterval; mouseRefreshLimit = savedLimit; mouseRefreshJitterPercent = savedJitter;
             ShowMouseContinue();
+        }
+    }
+
+    async Task RunQueuedMousePauseTests()
+    {
+        if (!Program.SelfTest || queueRunning || queueInputWatching || queueJob != null)
+            throw new InvalidOperationException("활성 예약 순서가 없는 로컬 모의 검사 전용입니다.");
+        var previousQueueStore = queueStore;
+        string previousQueueStage = queueStage;
+        int previousQueueGeneration = queueGeneration;
+        var previousJourney = settings.Journey;
+        int notificationsBefore = demoNotifications.Count;
+        try
+        {
+            await PrepareMouseMoreFixture();
+            var originalQuery = json.Deserialize<Dictionary<string, object>>(await view.CoreWebView2.ExecuteScriptAsync("KorailSiteAdapter.query(document)"));
+            string directory = Path.Combine(Program.DataRoot, "queue-pause-selftests", Guid.NewGuid().ToString("N"));
+            queueStore = new BookingQueueStore(Path.Combine(directory, "queue.json"));
+            var job = queueStore.Add(mouseTargets, new RefreshOptions(60, 10, 0), SavedTrainSelection.QueryText(originalQuery, mouseTargets));
+            // A real queued start may move its saved 00:00 lower bound forward.
+            // Freeze that effective 01:00 query, then simulate incomplete helper
+            // restoration while the selected 513 card is still below More.
+            await view.CoreWebView2.ExecuteScriptAsync("document.getElementById('startDate').value='2026-10-22(목) 01:00';KorailDesktopHelper.reset('queue pause fixture');");
+            Assert(await PrepareMouseRefresh(false, mouseGeneration), "queue pause fixture: effective query is frozen before pausing");
+            queueJob = queueStore.Begin(job.Id); queueRunning = true; queueStage = "booking";
+            settings.Journey = new JourneySettings { Enabled = true, DepartureStation = "부산", ArrivalStation = "대전", Date = "2026-10-25" };
+            mouseRefreshCount = 3;
+            InterruptMouseBooking("예약 순서의 더보기 중 모의 입력");
+            Assert(await EvalBool("!KorailDesktopHelper.snapshot().confirmed && KorailDesktopHelper.snapshot().targets.length===0"),
+                "queue pause fixture: helper selection is absent while the frozen later-page candidate remains queued");
+            string frozenQuery = mouseRefreshQuery;
+            DateTime next = mouseRefreshNext;
+            await ValidateMouseResume(mouseGeneration);
+            Assert(mousePaused && mouseBookingActive && queueRunning && queueStore.Get(job.Id).State == BookingQueueState.Running &&
+                mouseTargets[0].Train == "KTX 513" && mouseTargets[1].Train == "KTX 505" && mouseRefreshQuery == frozenQuery && mouseRefreshCount == 3 && mouseRefreshNext == next,
+                "queue resume: missing helper candidates and a different ordinary journey filter preserve the queue intent and effective query");
+
+            var more = await ReadMouseMore();
+            mouseMoreQuery = Get(more, "queryFingerprint"); mouseMoreBaseline = MoreKeys(more);
+            mouseMorePending = true; mouseMoreCount = 2; mouseMoreSent = DateTime.UtcNow.AddSeconds(-5);
+            DateTime sent = mouseMoreSent;
+            await view.CoreWebView2.ExecuteScriptAsync("document.getElementById('tab_tab_info1').setAttribute('aria-busy','true');");
+            await ValidateMouseResume(mouseGeneration);
+            Assert(mousePaused && mouseMorePending && mouseMoreSent == sent && mouseMoreCount == 2 && mouseRefreshCount == 3,
+                "queue resume: an unfinished More request retains its deadline and count without requiring restored checkboxes");
+            await view.CoreWebView2.ExecuteScriptAsync("document.getElementById('tab_tab_info1').removeAttribute('aria-busy');");
+            mouseMorePending = false;
+
+            foreach (string change in new[] {
+                "document.getElementById('startDate').value='2026-10-23(금) 01:00';",
+                "document.getElementById('labelend').value='익산';",
+                "document.getElementById('startDate').value='2026-10-22(목) 02:00';" })
+            {
+                await view.CoreWebView2.ExecuteScriptAsync(change);
+                await ExpectMouseResumeRejected("", "queue resume: a changed date, route or effective start time is rejected");
+                await view.CoreWebView2.ExecuteScriptAsync("document.getElementById('startDate').value='2026-10-22(목) 01:00';document.getElementById('labelend').value='전주';");
+            }
+            // Also exercise the second observation guard independently: a form
+            // can change after the earlier refresh reader has already returned.
+            var changedAfterRefresh = json.Deserialize<Dictionary<string, object>>(await view.CoreWebView2.ExecuteScriptAsync("KorailSiteAdapter.query(document)"));
+            changedAfterRefresh["fromTime"] = "02:00";
+            bool changedRejected = false;
+            try { QueuedMouseResumeSelection(changedAfterRefresh); }
+            catch (InvalidOperationException) { changedRejected = true; }
+            Assert(changedRejected, "queue resume: the latest query snapshot cannot drift from the frozen effective query after refresh validation");
+            mouseTargets.Reverse();
+            await ExpectMouseResumeRejected("예약 순서의 열차", "queue resume: changing the frozen candidate order cannot authorize another candidate");
+            mouseTargets.Reverse();
+            queueStore.MarkNeedsReview(job.Id);
+            await ExpectMouseResumeRejected("예약 순서의 열차", "queue resume: a job awaiting result review cannot resume native booking");
+            queueStore.ResetAfterUserConfirmed(job.Id, true); queueJob = queueStore.Begin(job.Id);
+            var attempt = mouseStore.Begin(mouseTargets[1]);
+            await ExpectMouseResumeRejected("예약 시도 기록", "queue resume: any candidate with an existing attempt blocks retry before another reservation");
+            queueStore.BindAttempt(job.Id, attempt);
+            await ExpectMouseResumeRejected("예약 순서의 열차", "queue resume: a queue item bound to an attempt cannot re-enter seat selection");
+            Assert(mouseStore.GetAll().Count == 1 && mouseStore.Get(attempt.Id).State == BookingAttemptState.Prepared,
+                "queue resume: rejected validation neither submits nor creates a second booking attempt");
+            await AssertMouseMoreNoInput("queue pause tests: no native input, seat selection, reservation, query or notification was emitted", notificationsBefore);
+
+            queueRunning = false; queueJob = null; queueStage = null;
+            settings.Journey = previousJourney;
+            await PrepareMousePauseFixture(true, false);
+            InterruptMouseBooking("일반 예약의 확인 해제 모의 입력");
+            await view.CoreWebView2.ExecuteScriptAsync("document.getElementById('korail-one-helper').shadowRoot.getElementById('confirmed').checked=false;");
+            await ExpectMouseResumeRejected("여정 확인란", "ordinary resume: an unchecked helper selection still requires explicit confirmation");
+        }
+        finally
+        {
+            // Only isolated synthetic records were used. Clear the synthetic
+            // queue before native cleanup so no real queue store can be touched.
+            queueRunning = false; queueJob = null; queueStage = null;
+            StopMouseBooking(null);
+            queueStore = previousQueueStore; queueStage = previousQueueStage; queueGeneration = previousQueueGeneration;
+            settings.Journey = previousJourney;
         }
     }
 

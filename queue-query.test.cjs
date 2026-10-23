@@ -109,6 +109,33 @@ test('calendar hour chooses visible exact hour or one native slider step without
   modal.querySelector('.timeSelect .slick-next').classList.add('slick-disabled'); noAction(f.read({ ...target(), fromTime: '13:00' }, context), 'blocked');
 });
 
+test('compact calendar explains inaccessible hours when responsive arrows are absent or hidden', t => {
+  for (const mode of ['removed', 'hidden']) {
+    const f = fixture(t), modal = calendar(f.doc), context = { activePicker: 'date' };
+    Object.defineProperty(f.w, 'innerWidth', { value: 860, configurable: true });
+    for (const arrow of modal.querySelectorAll('.timeSelect .slick-prev,.timeSelect .slick-next')) {
+      if (mode === 'removed') arrow.remove(); else arrow.style.display = 'none';
+    }
+    const before = f.doc.documentElement.outerHTML;
+    const plan = f.read({ ...target(), fromTime: '13:00' }, context);
+    noAction(plan, 'blocked'); assert.equal(plan.terminal, true); assert.equal(plan.retryAllowed, false);
+    assert.match(plan.message, /창.*최대화.*예약 관리/);
+    assert.equal(f.doc.documentElement.outerHTML, before);
+    // Compact width alone must not stop a visible hour or an already selected one.
+    assert.equal(f.read({ ...target(), fromTime: '03:00' }, context).action.id, 'date-hour:03:00');
+    assert.equal(f.read(target(), context).action.id, 'date-apply:2026-10-22:00:00');
+  }
+});
+
+test('hour arrow guidance is limited to compact layout and observable missing arrows', t => {
+  const f = fixture(t), modal = calendar(f.doc), wanted = { ...target(), fromTime: '13:00' }, context = { activePicker: 'date' };
+  Object.defineProperty(f.w, 'innerWidth', { value: 860, configurable: true });
+  assert.equal(f.read(wanted, context).action.id, 'date-hours:next:0-4');
+  modal.querySelector('.timeSelect .slick-next').remove();
+  Object.defineProperty(f.w, 'innerWidth', { value: 1280, configurable: true });
+  const plan = f.read(wanted, context); noAction(plan, 'unknown'); assert.doesNotMatch(plan.message, /최대화/);
+});
+
 test('calendar duplicate active months or day numbers never choose an ambiguous date', t => {
   const f = fixture(t), modal = calendar(f.doc), context = { activePicker: 'date' };
   modal.querySelector('tr').append(modal.querySelector('td').cloneNode(true)); noAction(f.read(target(), context), 'unknown');
