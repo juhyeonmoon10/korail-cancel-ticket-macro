@@ -123,6 +123,8 @@ internal sealed partial class MainWindow
                 mouseTargets = queuedJob.Targets.Select(target => target.Copy()).ToList();
             }
             mouseTarget = mouseTargets[0].Copy();
+            if (mouseDemo && enableRefresh && mouseBookingCompletionMode == BookingCompletionMode.All && mouseTargets.Count > 1)
+                throw new InvalidOperationException("모의 연습에서는 여러 열차 모두 예약을 실행하지 않습니다. ‘한 편 성공 시 종료’를 선택하세요.");
             if (!mouseDemo && String.CompareOrdinal(mouseTarget.Date, DateTime.Today.ToString("yyyy-MM-dd")) < 0) throw new InvalidOperationException("과거 날짜는 예약할 수 없습니다. 다시 조회하세요.");
             if (!mouseDemo && queuedJob == null && settings.Journey.Enabled)
             {
@@ -149,9 +151,12 @@ internal sealed partial class MainWindow
             await view.CoreWebView2.ExecuteScriptAsync("(() => {const r=document.getElementById('korail-one-helper')?.shadowRoot;const m=r?.querySelector('main');if(m){m.hidden=true;r.getElementById('fold').textContent='+';}})()");
             if (startRun != mouseGeneration || closing) return;
             if (!AutomationAvailable()) return;
+            if (queuedJob == null && !mouseDemo && enableRefresh && mouseBookingCompletionMode == BookingCompletionMode.All && mouseTargets.Count > 1)
+                StartSelectedBookingBatch(query);
             siteDiagnostics.AddAction("start");
             StartMouseLoop();
-            status.Text = (mouseDemo ? "[모의 연습] " : "") + mouseTarget.Date + " · " + String.Join(", ", mouseTargets.Select(target => target.Train)) + " · " + mouseTarget.Grade + " 중 한 편 확인 · F8 중지";
+            status.Text = (mouseDemo ? "[모의 연습] " : "") + mouseTarget.Date + " · " + String.Join(", ", mouseTargets.Select(target => target.Train)) + " · " + mouseTarget.Grade +
+                (enableRefresh && mouseBookingCompletionMode == BookingCompletionMode.All && !mouseDemo ? " 모두 예약 완료까지 · F8 중지" : " 중 한 편 확인 · F8 중지");
         }
         catch (Exception ex) { if (startRun == mouseGeneration) StopMouseBooking("시작하지 못했습니다. " + ex.Message); }
     }

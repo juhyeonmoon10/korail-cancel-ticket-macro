@@ -42,6 +42,7 @@ internal static class BookingQueueTests
     }
     static void Run(string directory)
     {
+        RunAllCandidates(directory);
         string path = Path.Combine(directory, "queue.json");
         var queue = new BookingQueueStore(path);
         Check(queue.GetAll().Count == 0 && !File.Exists(path), "empty queue read creates no persistence or bookings");
@@ -169,5 +170,77 @@ internal static class BookingQueueTests
         Check(Reject(() => new BookingQueueStore(queryPath)), "oversized queue file rejected before parsing");
         File.WriteAllText(queryPath, before, Encoding.UTF8); File.Delete(queryPath);
         Check(Reject(() => new BookingQueueStore(queryPath)) && Reject(() => queryStore.Add(new[] { Target(705) }, Options())), "missing initialized queue fails closed both live and after restart");
+    }
+
+    static void RunAllCandidates(string directory)
+    {
+        string path = Path.Combine(directory, "all-candidates.json");
+        var store = new BookingQueueStore(path);
+        var attempts = new BookingAttemptStore(Path.Combine(directory, "all-attempts.json"));
+        var earlier = store.Add(new[] { Target(801) }, Options());
+        var all = store.Add(new[] { Target(811), Target(813), Target(815) }, new RefreshOptions(5, 3, 10, true, BookingCompletionMode.All));
+        Check(all.Unlimited && all.CompletionMode == BookingCompletionMode.All && all.RefreshCount == 0 && all.ConfirmedCount == 0, "All job preserves explicit completion policy and unlimited flag");
+        Check(Reject(() => store.Begin(all.Id)), "ordinary queue start still cannot skip an earlier saved journey");
+        Check(store.BeginSelected(all.Id).Id == all.Id && store.Get(earlier.Id).State == BookingQueueState.Pending, "explicit current selection starts only its own batch and preserves earlier saved order");
+        store.RecordRefreshCount(all.Id, 7); store.RecordRefreshCount(all.Id, 7);
+        Check(store.Get(all.Id).RefreshCount == 7 && Reject(() => store.RecordRefreshCount(all.Id, 6)) && Reject(() => store.RecordRefreshCount(all.Id, -1)), "cumulative refresh count is durable and cannot decrease");
+        var first = attempts.Begin(all.Targets[1]); store.BindAttempt(all.Id, first);
+        Check(Reject(() => store.Complete(all.Id, first)) && store.Get(all.Id).ConfirmedCount == 0, "All never counts a prepared click as a successful reservation");
+        var confirmedFirst = Confirm(attempts, first);
+        Check(store.Complete(all.Id, confirmedFirst), "first confirmed All candidate records progress");
+        var partial = store.Get(all.Id);
+        Check(partial.State == BookingQueueState.Pending && partial.ConfirmedCount == 1 && partial.CompletedUtc == null && partial.AttemptId == null,
+            "partial All completion returns the same job to pending without declaring the whole job completed");
+        Check(partial.RemainingTargets().Select(t => t.Key).SequenceEqual(new[] { all.Targets[0].Key, all.Targets[2].Key }) && partial.RefreshCount == 7,
+            "remaining All candidates exclude the confirmed train and retain the accumulated query budget");
+        partial.Completions[0].TargetKey = "altered"; partial.Completions.Clear(); partial.RemainingTargets().Clear();
+        Check(store.Get(all.Id).ConfirmedCount == 1 && store.Get(all.Id).RemainingTargets().Count == 2, "returned completion progress and remaining selections cannot mutate persistence");
+        Check(!store.Complete(all.Id, confirmedFirst) && store.Get(all.Id).ConfirmedCount == 1, "duplicate first receipt is idempotent while later candidates remain");
+        store = new BookingQueueStore(path);
+        Check(store.Get(all.Id).State == BookingQueueState.Pending && store.Get(all.Id).ConfirmedCount == 1 && store.Get(all.Id).RefreshCount == 7,
+            "restart after confirmed All candidate preserves safe remaining work and count");
+        store.BeginSelected(all.Id);
+        Check(Reject(() => store.BindAttempt(all.Id, first)), "already confirmed candidate cannot bind as the next All attempt");
+        var second = attempts.Begin(all.Targets[0]); store.BindAttempt(all.Id, second);
+        Check(!store.Complete(all.Id, confirmedFirst) && store.Get(all.Id).AttemptId == second.Id, "late duplicate receipt cannot replace the next active attempt");
+        attempts.MarkSubmitted(second.Id); attempts.RecordUnknown(second.Id, "synthetic uncertain result");
+        Check(Reject(() => store.Complete(all.Id, attempts.Get(second.Id))), "uncertain second reservation never advances All progress");
+        store = new BookingQueueStore(path);
+        Check(store.Get(all.Id).State == BookingQueueState.NeedsReview && store.Get(all.Id).ConfirmedCount == 1 && store.Get(all.Id).AttemptId == second.Id,
+            "restart with an uncertain All attempt freezes that attempt and preserves earlier confirmation");
+        Check(Reject(() => store.BeginSelected(all.Id)) && Reject(() => store.BeginNext()), "uncertain All attempt blocks automatic retry and other queued journeys");
+        attempts.RecordConfirmed(second.Id, BookingReceipt.CreateConfirmed(second.Target, second.Target, "2345-6789", null));
+        Check(store.Complete(all.Id, attempts.Get(second.Id)) && store.Get(all.Id).ConfirmedCount == 2 && store.Get(all.Id).State == BookingQueueState.Pending,
+            "verified review result advances All without repeating the uncertain attempt");
+        store.BeginSelected(all.Id); store.RecordRefreshCount(all.Id, (long)Int32.MaxValue + 8);
+        var third = attempts.Begin(all.Targets[2]); store.BindAttempt(all.Id, third);
+        var confirmedThird = Confirm(attempts, third);
+        Check(store.Complete(all.Id, confirmedThird) && store.Get(all.Id).State == BookingQueueState.Completed && store.Get(all.Id).ConfirmedCount == 3,
+            "All finishes only after each distinct selected train has a confirmed receipt");
+        Check(store.Get(all.Id).RemainingTargets().Count == 0 && store.Get(all.Id).RefreshCount == (long)Int32.MaxValue + 8 && !store.Complete(all.Id, confirmedThird),
+            "completed All has no remaining candidates, preserves long counter and ignores duplicate final receipt");
+        Check(store.Get(earlier.Id).State == BookingQueueState.Pending && store.GetAll().Select(j => j.Id).SequenceEqual(new[] { earlier.Id, all.Id }),
+            "isolated selected batch leaves existing jobs and their order untouched");
+        Check(new BookingQueueStore(path).Get(all.Id).ConfirmedCount == 3, "every All confirmation survives a completed restart");
+
+        var reset = store.Add(new[] { Target(821), Target(823) }, new RefreshOptions(5, 10, 0, false, BookingCompletionMode.All));
+        store.BeginSelected(reset.Id);
+        var resetFirst = attempts.Begin(reset.Targets[0]); store.BindAttempt(reset.Id, resetFirst); store.Complete(reset.Id, Confirm(attempts, resetFirst));
+        store.BeginSelected(reset.Id); store.MarkNeedsReview(reset.Id); store.ResetAfterUserConfirmed(reset.Id, true);
+        Check(store.Get(reset.Id).ConfirmedCount == 1 && store.Get(reset.Id).RemainingTargets().Single().Key == reset.Targets[1].Key,
+            "manual review reset preserves confirmed All candidates instead of booking them again");
+        Check(Reject(() => store.RecordRefreshCount(reset.Id, 1)), "inactive job cannot receive automatic query count updates");
+
+        string clean = File.ReadAllText(path);
+        var serializer = new JavaScriptSerializer();
+        var payload = serializer.Deserialize<BookingQueueStore.StoredQueue>(clean);
+        payload.Jobs.Single(j => j.Id == all.Id).Completions[1].TargetKey = payload.Jobs.Single(j => j.Id == all.Id).Completions[0].TargetKey;
+        File.WriteAllText(path, serializer.Serialize(payload));
+        Check(Reject(() => new BookingQueueStore(path)), "duplicate persisted completed target is rejected before any restart");
+        File.WriteAllText(path, clean);
+        payload = serializer.Deserialize<BookingQueueStore.StoredQueue>(clean); payload.Jobs[0].CompletionMode = (BookingCompletionMode)99;
+        File.WriteAllText(path, serializer.Serialize(payload));
+        Check(Reject(() => new BookingQueueStore(path)), "unknown persisted completion policy fails closed");
+        File.WriteAllText(path, clean);
     }
 }

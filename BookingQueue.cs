@@ -9,8 +9,16 @@ using System.Web.Script.Serialization;
 
 internal enum BookingQueueState { Pending, Running, Completed, NeedsReview }
 
-// One job is one reservation, with several alternative trains. A successful
-// alternative completes the whole job; the remaining alternatives never run.
+internal sealed class BookingQueueCompletion
+{
+    public string AttemptId { get; set; }
+    public string TargetKey { get; set; }
+    public string ConfirmedUtc { get; set; }
+    public BookingQueueCompletion Copy() { return (BookingQueueCompletion)MemberwiseClone(); }
+}
+
+// Confirmed candidates remain durable when All continues the same job. They
+// are excluded from every subsequent selection, including after a restart.
 internal sealed class BookingQueueJob
 {
     public string Id { get; set; }
@@ -18,6 +26,10 @@ internal sealed class BookingQueueJob
     public int IntervalSeconds { get; set; }
     public int Limit { get; set; }
     public int JitterPercent { get; set; }
+    public bool Unlimited { get; set; }
+    public BookingCompletionMode CompletionMode { get; set; }
+    public long RefreshCount { get; set; }
+    public List<BookingQueueCompletion> Completions { get; set; }
     public string QueryJson { get; set; }
     public BookingQueueState State { get; set; }
     public string CreatedUtc { get; set; }
@@ -31,8 +43,15 @@ internal sealed class BookingQueueJob
     {
         var result = (BookingQueueJob)MemberwiseClone();
         result.Targets = Targets == null ? null : Targets.Select(t => t.Copy()).ToList();
+        result.Completions = Completions == null ? new List<BookingQueueCompletion>() : Completions.Select(c => c.Copy()).ToList();
         return result;
     }
+    public List<BookingTarget> RemainingTargets()
+    {
+        var completed = new HashSet<string>((Completions ?? new List<BookingQueueCompletion>()).Select(c => c.TargetKey), StringComparer.Ordinal);
+        return Targets.Where(t => !completed.Contains(t.Key)).Select(t => t.Copy()).ToList();
+    }
+    public int ConfirmedCount { get { return Completions == null ? 0 : Completions.Count; } }
 }
 
 internal sealed class BookingQueueStore
@@ -95,9 +114,25 @@ internal sealed class BookingQueueStore
             if (job == null || !ValidId(job.Id) || !ids.Add(job.Id) || !ValidTimestamp(job.CreatedUtc) || !Enum.IsDefined(typeof(BookingQueueState), job.State)) throw new InvalidDataException();
             ValidateTargets(job.Targets);
             ValidateQuery(job.QueryJson, job.Targets);
-            new RefreshOptions(job.IntervalSeconds, job.Limit, job.JitterPercent);
-            if (job.AttemptId != null && (!ValidId(job.AttemptId) || !attempts.Add(job.AttemptId))) throw new InvalidDataException();
+            new RefreshOptions(job.IntervalSeconds, job.Limit, job.JitterPercent, job.Unlimited, job.CompletionMode);
+            if (job.RefreshCount < 0) throw new InvalidDataException();
+            if (job.Completions == null) job.Completions = new List<BookingQueueCompletion>();
+            // Old completed Any jobs had only the final attempt binding.
+            if (job.State == BookingQueueState.Completed && job.CompletionMode == BookingCompletionMode.Any && job.Completions.Count == 0)
+                job.Completions.Add(new BookingQueueCompletion { AttemptId = job.AttemptId, TargetKey = job.CompletedTargetKey, ConfirmedUtc = job.CompletedUtc });
+            if (job.Completions.Count > job.Targets.Count || job.CompletionMode == BookingCompletionMode.Any && job.Completions.Count > 1) throw new InvalidDataException();
+            var completedKeys = new HashSet<string>(StringComparer.Ordinal);
+            var completedAttempts = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var completed in job.Completions)
+            {
+                if (completed == null || !ValidId(completed.AttemptId) || !completedAttempts.Add(completed.AttemptId) || !completedKeys.Add(completed.TargetKey) ||
+                    !job.Targets.Any(t => t.Key == completed.TargetKey) || !ValidTimestamp(completed.ConfirmedUtc) || String.CompareOrdinal(completed.ConfirmedUtc, job.CreatedUtc) < 0)
+                    throw new InvalidDataException();
+                if (!attempts.Add(completed.AttemptId)) throw new InvalidDataException();
+            }
+            if (job.AttemptId != null && (!ValidId(job.AttemptId) || !completedAttempts.Contains(job.AttemptId) && !attempts.Add(job.AttemptId))) throw new InvalidDataException();
             if (job.AttemptId == null ? job.AttemptTargetKey != null : !job.Targets.Any(t => t.Key == job.AttemptTargetKey)) throw new InvalidDataException();
+            if (job.AttemptId != null && completedAttempts.Contains(job.AttemptId) && !job.Completions.Any(c => c.AttemptId == job.AttemptId && c.TargetKey == job.AttemptTargetKey)) throw new InvalidDataException();
             if (job.State == BookingQueueState.Pending)
             {
                 if (job.StartedUtc != null || job.AttemptId != null) throw new InvalidDataException();
@@ -106,8 +141,10 @@ internal sealed class BookingQueueStore
             if (job.State == BookingQueueState.Completed)
             {
                 if (!ValidTimestamp(job.CompletedUtc) || String.CompareOrdinal(job.CompletedUtc, job.StartedUtc) < 0 || job.AttemptId == null || job.CompletedTargetKey != job.AttemptTargetKey) throw new InvalidDataException();
+                if (job.CompletionMode == BookingCompletionMode.All ? job.Completions.Count != job.Targets.Count : job.Completions.Count != 1) throw new InvalidDataException();
             }
             else if (job.CompletedUtc != null || job.CompletedTargetKey != null) throw new InvalidDataException();
+            else if (job.Completions.Count == job.Targets.Count || job.CompletionMode == BookingCompletionMode.Any && job.Completions.Count != 0) throw new InvalidDataException();
             if (job.State == BookingQueueState.Running || job.State == BookingQueueState.NeedsReview) active++;
         }
         if (active > 1) throw new InvalidDataException();
@@ -211,7 +248,8 @@ internal sealed class BookingQueueStore
         string frozenQuery = NormalizeQuery(queryJson ?? DefaultQuery(frozen), frozen);
         return Change(data => {
             if (data.Jobs.Count >= MaximumJobs) throw new InvalidOperationException("예약 순서는 최대 20건입니다. 완료한 항목을 정리한 뒤 추가하세요.");
-            var job = new BookingQueueJob { Id = Guid.NewGuid().ToString("N"), Targets = frozen, IntervalSeconds = options.IntervalSeconds, Limit = options.Limit, JitterPercent = options.JitterPercent, QueryJson = frozenQuery, State = BookingQueueState.Pending, CreatedUtc = Timestamp() };
+            var job = new BookingQueueJob { Id = Guid.NewGuid().ToString("N"), Targets = frozen, IntervalSeconds = options.IntervalSeconds, Limit = options.Limit, JitterPercent = options.JitterPercent,
+                Unlimited = options.Unlimited, CompletionMode = options.CompletionMode, Completions = new List<BookingQueueCompletion>(), QueryJson = frozenQuery, State = BookingQueueState.Pending, CreatedUtc = Timestamp() };
             data.Jobs.Add(job); return job.Copy();
         });
     }
@@ -232,10 +270,10 @@ internal sealed class BookingQueueStore
             data.Jobs.Remove(job); data.Jobs.Insert(newIndex, job); return true;
         });
     }
-    static BookingQueueJob BeginIn(StoredQueue data, string id)
+    static BookingQueueJob BeginIn(StoredQueue data, string id, bool selected = false)
     {
         if (data.Jobs.Any(j => j.State == BookingQueueState.Running || j.State == BookingQueueState.NeedsReview)) throw new InvalidOperationException("진행 중인 예약이나 확인이 필요한 예약을 먼저 확인하세요.");
-        var next = data.Jobs.FirstOrDefault(j => j.State == BookingQueueState.Pending);
+        var next = selected ? data.Jobs.FirstOrDefault(j => j.Id == id && j.State == BookingQueueState.Pending) : data.Jobs.FirstOrDefault(j => j.State == BookingQueueState.Pending);
         if (next == null) return null;
         if (id != null && next.Id != id) throw new InvalidOperationException("예약 순서의 첫 번째 대기 항목부터 실행해야 합니다.");
         next.State = BookingQueueState.Running; next.StartedUtc = Timestamp();
@@ -247,6 +285,22 @@ internal sealed class BookingQueueStore
         if (!ValidId(id)) throw new ArgumentException("예약 순서 ID가 필요합니다.");
         return Change(data => { Require(data, id); return BeginIn(data, id); });
     }
+    // Explicitly starting the current selection must not consume pre-existing
+    // queued journeys. Ordinary Begin/BeginNext still enforce saved order.
+    public BookingQueueJob BeginSelected(string id)
+    {
+        if (!ValidId(id)) throw new ArgumentException("예약 순서 ID가 필요합니다.");
+        return Change(data => { Require(data, id); return BeginIn(data, id, true); });
+    }
+    public void RecordRefreshCount(string id, long count)
+    {
+        if (count < 0) throw new ArgumentOutOfRangeException("count");
+        Change(data => {
+            var job = Require(data, id);
+            if (job.State != BookingQueueState.Running || count < job.RefreshCount) throw new InvalidOperationException("실행 중인 조회 횟수는 줄일 수 없습니다.");
+            job.RefreshCount = count; return true;
+        });
+    }
     public void BindAttempt(string jobId, BookingAttempt attempt)
     {
         if (attempt == null || !ValidId(attempt.Id) || attempt.Target == null || attempt.Target.Validate() != null || attempt.State != BookingAttemptState.Prepared || !ValidTimestamp(attempt.CreatedUtc) || attempt.SubmittedUtc != null || attempt.Receipt != null)
@@ -254,10 +308,10 @@ internal sealed class BookingQueueStore
         var snapshot = attempt.Copy();
         Change(data => {
             var job = Require(data, jobId);
-            if (job.State != BookingQueueState.Running || !job.Targets.Any(t => t.Key == snapshot.Target.Key)) throw new InvalidOperationException("실행 중인 예약의 선택 열차와 예약 시도가 일치하지 않습니다.");
+            if (job.State != BookingQueueState.Running || !job.RemainingTargets().Any(t => t.Key == snapshot.Target.Key)) throw new InvalidOperationException("실행 중인 예약의 남은 선택 열차와 예약 시도가 일치하지 않습니다.");
             if (job.AttemptId != null && job.AttemptId != snapshot.Id) throw new InvalidOperationException("이 항목에는 이미 예약 시도가 연결되어 있습니다.");
             if (job.AttemptTargetKey != null && job.AttemptTargetKey != snapshot.Target.Key) throw new InvalidOperationException("연결된 예약 시도의 열차를 변경할 수 없습니다.");
-            if (data.Jobs.Any(j => j.Id != job.Id && j.AttemptId == snapshot.Id)) throw new InvalidOperationException("다른 항목에 연결된 예약 시도입니다.");
+            if (data.Jobs.Any(j => j.Id != job.Id && (j.AttemptId == snapshot.Id || j.Completions.Any(c => c.AttemptId == snapshot.Id)))) throw new InvalidOperationException("다른 항목에 연결된 예약 시도입니다.");
             job.AttemptId = snapshot.Id; job.AttemptTargetKey = snapshot.Target.Key; return true;
         });
     }
@@ -269,6 +323,12 @@ internal sealed class BookingQueueStore
         var snapshot = attempt.Copy();
         return Change(data => {
             var job = Require(data, jobId);
+            var recorded = job.Completions.FirstOrDefault(c => c.AttemptId == snapshot.Id);
+            if (recorded != null)
+            {
+                if (recorded.TargetKey != snapshot.Target.Key) throw new InvalidOperationException("이미 확인한 시도의 열차와 다른 예약 결과입니다.");
+                return false;
+            }
             if (job.AttemptId != snapshot.Id || job.AttemptTargetKey != snapshot.Target.Key || !job.Targets.Any(t => t.Key == snapshot.Target.Key)) throw new InvalidOperationException("이 예약 순서에 연결된 열차와 완료 기록이 일치하지 않습니다.");
             if (job.State == BookingQueueState.Completed)
             {
@@ -276,7 +336,13 @@ internal sealed class BookingQueueStore
                 return false;
             }
             if (job.State != BookingQueueState.Running && job.State != BookingQueueState.NeedsReview) throw new InvalidOperationException("시작한 예약만 완료할 수 있습니다.");
-            job.State = BookingQueueState.Completed; job.CompletedTargetKey = snapshot.Target.Key; job.CompletedUtc = Timestamp();
+            if (job.Completions.Any(c => c.TargetKey == snapshot.Target.Key)) throw new InvalidOperationException("이미 예약을 확인한 열차입니다.");
+            job.Completions.Add(new BookingQueueCompletion { AttemptId = snapshot.Id, TargetKey = snapshot.Target.Key, ConfirmedUtc = snapshot.ConfirmedUtc });
+            if (job.CompletionMode == BookingCompletionMode.All && job.Completions.Count < job.Targets.Count)
+            {
+                job.State = BookingQueueState.Pending; job.StartedUtc = null; job.AttemptId = null; job.AttemptTargetKey = null;
+            }
+            else { job.State = BookingQueueState.Completed; job.CompletedTargetKey = snapshot.Target.Key; job.CompletedUtc = Timestamp(); }
             return true;
         });
     }

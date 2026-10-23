@@ -13,7 +13,7 @@ internal sealed partial class MainWindow
     bool queueRunning, queueBusy, queueInputWatching, queueSubmitted;
     int queueGeneration, queueActions, queueReaderPage = -1;
     uint queueInputVersion;
-    string queueStage, queuePicker, queueLastAction;
+    string queueStage, queuePicker, queueLastAction, queueOnlyJobId;
     DateTime queueDeadline, queueNextInput;
     System.Windows.Forms.Timer queueTimer;
     readonly QueueQueryProgress queueProgress = new QueueQueryProgress();
@@ -38,7 +38,7 @@ internal sealed partial class MainWindow
                     if (action == BookingQueueDialogAction.AddCurrent)
                     {
                         var selected = await ReadSelectionForQueue();
-                        using (var options = new RefreshSettingsDialog(new RefreshOptions(mouseRefreshIntervalSeconds, mouseRefreshLimit, mouseRefreshJitterPercent), Font, true))
+                        using (var options = new RefreshSettingsDialog(CurrentRefreshOptions(), Font, true))
                         {
                             if (options.ShowDialog(dialog) == DialogResult.OK)
                                 store.Add(selected.Targets, options.SelectedOptions, selected.QueryJson);
@@ -60,7 +60,7 @@ internal sealed partial class MainWindow
                             store.Complete(job.Id, bound);
                         else
                         {
-                            if (job.Targets.Any(target => attempts.FindByTarget(target) != null))
+                            if (job.RemainingTargets().Any(target => attempts.FindByTarget(target) != null))
                                 throw new InvalidOperationException("이 열차에 예약 시도 기록이 있습니다. ‘예약 기록’에서 공식 예약 결과를 확인하고 기록을 정리하세요.");
                             if (MessageBox.Show(dialog, "이 항목의 공식 예약 내역에 미확인 예약이 없음을 확인했나요?\n확인하면 이 항목을 다시 대기 상태로 바꿉니다. 실제 예약을 취소하지는 않습니다.", "예약 결과 확인", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
                                 store.ResetAfterUserConfirmed(id, true);
@@ -92,7 +92,7 @@ internal sealed partial class MainWindow
             var jobs = QueueStore().GetAll();
             if (!jobs.Any(job => job.State == BookingQueueState.Pending)) throw new InvalidOperationException("실행할 대기 항목을 먼저 추가하세요.");
             if (jobs.Any(job => job.State == BookingQueueState.NeedsReview)) throw new InvalidOperationException("확인이 필요한 항목을 먼저 예약 관리에서 확인하세요.");
-            queueRunning = true; queueGeneration++;
+            queueOnlyJobId = null; queueRunning = true; queueGeneration++;
             BeginNextQueuedBooking();
         }
         catch (Exception ex) { StopBookingQueue("예약 순서를 시작하지 못했습니다. " + ex.Message); status.Text = ex.Message; }
@@ -102,37 +102,64 @@ internal sealed partial class MainWindow
     {
         if (!queueRunning || closing) return;
         if (!InputWindowReady()) throw new InvalidOperationException("입력 대상 창이 비활성 상태라 다음 예약을 시작하지 않았습니다.");
-        var pending = QueueStore().GetAll().FirstOrDefault(job => job.State == BookingQueueState.Pending);
+        var pending = QueueStore().GetAll().FirstOrDefault(job => job.State == BookingQueueState.Pending && (queueOnlyJobId == null || job.Id == queueOnlyJobId));
         if (pending == null)
         {
             StopBookingQueue(null);
-            status.Text = "예약 순서 완료 · 항목마다 후보 중 한 편 예약됨 · 결제는 공식 화면에서 직접 하세요.";
+            status.Text = "예약 완료 조건을 모두 충족했습니다 · 결제는 공식 화면에서 직접 하세요.";
             return;
         }
         if (String.CompareOrdinal(pending.Targets[0].Date, DateTime.Today.ToString("yyyy-MM-dd")) < 0)
             throw new InvalidOperationException("다음 예약이 과거 날짜입니다. 예약 관리에서 확인하세요.");
         var attempts = new BookingAttemptStore(Path.Combine(Program.DataRoot, "booking-attempts.json"));
-        if (pending.Targets.Any(target => attempts.FindByTarget(target) != null))
+        if (pending.RemainingTargets().Any(target => attempts.FindByTarget(target) != null))
             throw new InvalidOperationException("다음 항목에 이미 시도한 열차가 있습니다. 예약 기록을 먼저 확인하세요.");
         // Validate before starting so an expired or already-booked pending item
         // stays editable. Persist Running before the first navigation or input.
-        queueJob = QueueStore().Begin(pending.Id);
-        savedSelection = SavedTrainSelection.FromJob(queueJob); savedSelection.Save(SelectionFile);
+        queueJob = queueOnlyJobId == null ? QueueStore().Begin(pending.Id) : QueueStore().BeginSelected(pending.Id);
+        var selectionJob = queueJob.Copy(); selectionJob.Targets = queueJob.RemainingTargets();
+        savedSelection = SavedTrainSelection.FromJob(selectionJob); savedSelection.Save(SelectionFile);
         queueStage = "query"; queueSubmitted = false; queuePicker = queueLastAction = null;
         queueProgress.Reset(); queueActions = 0; queueReaderPage = -1;
         queueDeadline = DateTime.UtcNow.AddSeconds(30); queueNextInput = DateTime.UtcNow;
         sleepPrevention.Start(); ShowSleepStatus(false);
         BeginAutomationInputWatch(); queueInputWatching = true;
         queueInputVersion = NativeMouseInput.ForeignInputVersion();
-        if (queueTimer == null)
-        {
-            queueTimer = new System.Windows.Forms.Timer { Interval = 500 };
-            queueTimer.Tick += async delegate { await TickQueueQuery(); };
-        }
+        EnsureQueueTimer();
         queueTimer.Start();
         status.Text = "다음 예약 조회 준비 · " + queueJob.Targets[0].Date + " · " + queueJob.Targets[0].DepartureStation + " → " + queueJob.Targets[0].ArrivalStation + " · F8 중지";
         UpdateShellState();
         Navigate("https://www.korail.com/ticket/search/general");
+    }
+
+    void EnsureQueueTimer()
+    {
+        if (queueTimer != null) return;
+        queueTimer = new System.Windows.Forms.Timer { Interval = 500 };
+        queueTimer.Tick += async delegate { await TickQueueQuery(); };
+    }
+
+    // The ordinary Start button can run all selected trains without consuming
+    // any earlier saved journeys. Its progress is still visible/recoverable in
+    // 예약 관리, and the durable attempt guards are shared with queued jobs.
+    void StartSelectedBookingBatch(Dictionary<string, object> query)
+    {
+        if (queueRunning || queueJob != null) throw new InvalidOperationException("진행 중인 예약 순서를 먼저 중지하세요.");
+        var store = QueueStore();
+        if (store.GetAll().Any(job => job.State == BookingQueueState.Running || job.State == BookingQueueState.NeedsReview))
+            throw new InvalidOperationException("예약 관리에서 확인이 필요한 항목을 먼저 확인하세요.");
+        var created = store.Add(mouseTargets, CurrentRefreshOptions(), SavedTrainSelection.QueryText(query, mouseTargets));
+        queueJob = store.BeginSelected(created.Id);
+        queueOnlyJobId = created.Id; queueRunning = true; queueGeneration++; queueStage = "booking";
+        EnsureQueueTimer();
+    }
+
+    void RecordQueuedRefreshCount(long count)
+    {
+        if (!queueRunning || queueJob == null) return;
+        if (queueStage != "booking") throw new InvalidOperationException("실행 중인 예약의 조회 횟수를 확인하지 못했습니다.");
+        QueueStore().RecordRefreshCount(queueJob.Id, count);
+        queueJob.RefreshCount = count;
     }
 
     void ReleaseQueueInput()
@@ -162,7 +189,7 @@ internal sealed partial class MainWindow
         catch { reason = "예약 순서의 중지 기록을 저장하지 못했습니다. 공식 예약 내역을 확인하세요."; }
         try { ReleaseQueueInput(); }
         catch { reason = "입력 감시를 정리하지 못했습니다. 프로그램을 다시 실행하세요."; }
-        queueJob = null; queueStage = null; queuePicker = null; queueSubmitted = false; queueProgress.Reset();
+        queueJob = null; queueOnlyJobId = null; queueStage = null; queuePicker = null; queueSubmitted = false; queueProgress.Reset();
         if (stopNative) StopMouseBooking(reason);
         if (!closing && reason != null) status.Text = reason + " · 예약 순서 중지";
         if (!closing) UpdateShellState();
@@ -184,7 +211,11 @@ internal sealed partial class MainWindow
     {
         if (!queueRunning) return -1;
         if (queueStage != "booking" || queueJob == null) throw new InvalidOperationException("완료할 예약 순서를 확인하지 못했습니다.");
-        QueueStore().Complete(queueJob.Id, attempt);
+        var current = QueueStore().Get(queueJob.Id);
+        if (attempt == null || current == null || current.AttemptId != attempt.Id || attempt.Target == null || current.AttemptTargetKey != attempt.Target.Key)
+            throw new InvalidOperationException("현재 예약 시도와 다른 완료 기록으로 다음 열차를 시작할 수 없습니다.");
+        if (!QueueStore().Complete(queueJob.Id, attempt)) throw new InvalidOperationException("이미 처리한 예약 완료 기록입니다.");
+        queueJob = QueueStore().Get(queueJob.Id);
         queueStage = "notifying"; // Native stop must not turn a confirmed job into NeedsReview.
         return queueGeneration;
     }
@@ -230,7 +261,7 @@ internal sealed partial class MainWindow
         if (queueJob == null || navigationPending || page != navigation || source != view.CoreWebView2.Source) return null;
         await view.CoreWebView2.ExecuteScriptAsync("(() => { const r=document.getElementById('korail-one-helper')?.shadowRoot; const m=r?.querySelector('main'); if(m){m.hidden=true;r.getElementById('fold').textContent='+';} })()");
         if (queueJob == null || navigationPending || page != navigation || source != view.CoreWebView2.Source) return null;
-        string raw = await view.CoreWebView2.ExecuteScriptAsync("window.KorailQueueQuery.read(" + queueJob.QueryJson + ",null," + json.Serialize(new { submitted = queueSubmitted, activePicker = queuePicker, latestDeparture = queueJob.Targets.Min(target => target.Departure) }) + ")");
+        string raw = await view.CoreWebView2.ExecuteScriptAsync("window.KorailQueueQuery.read(" + queueJob.QueryJson + ",null," + json.Serialize(new { submitted = queueSubmitted, activePicker = queuePicker, latestDeparture = queueJob.RemainingTargets().Min(target => target.Departure) }) + ")");
         if (navigationPending || page != navigation || source != view.CoreWebView2.Source) return null;
         return json.Deserialize<Dictionary<string, object>>(raw);
     }
@@ -262,21 +293,24 @@ internal sealed partial class MainWindow
             {
                 if (!queueSubmitted || !queueProgress.Ready(navigation, view.CoreWebView2.Source, NumberValue(plan, "resultRevision"), Get(plan, "fingerprint"), DateTime.UtcNow)) return;
                 var observedQuery = ObjectValue(plan, "query");
-                string effectiveQuery = SavedTrainSelection.QueryText(observedQuery, queueJob.Targets);
+                var remainingTargets = queueJob.RemainingTargets();
+                string effectiveQuery = SavedTrainSelection.QueryText(observedQuery, remainingTargets);
                 var expectedQuery = json.Deserialize<Dictionary<string, object>>(queueJob.QueryJson);
                 string effectiveTime = Get(observedQuery, "fromTime");
-                if (String.CompareOrdinal(effectiveTime, Get(expectedQuery, "fromTime")) < 0 || String.CompareOrdinal(effectiveTime, queueJob.Targets.Min(target => target.Departure)) > 0)
+                if (String.CompareOrdinal(effectiveTime, Get(expectedQuery, "fromTime")) < 0 || String.CompareOrdinal(effectiveTime, remainingTargets.Min(target => target.Departure)) > 0)
                     throw new InvalidOperationException("다음 조회 시작 시간이 후보 열차의 출발 시각을 벗어났습니다.");
                 expectedQuery["fromTime"] = effectiveTime;
-                if (effectiveQuery != SavedTrainSelection.QueryText(expectedQuery, queueJob.Targets))
+                if (effectiveQuery != SavedTrainSelection.QueryText(expectedQuery, remainingTargets))
                     throw new InvalidOperationException("다음 예약의 저장 조건과 실제 조회 결과가 다릅니다.");
                 CheckQueueInput(); ReleaseQueueInput(); queueStage = "starting";
                 var starting = queueJob.Copy();
+                starting.Targets = remainingTargets;
                 starting.QueryJson = effectiveQuery;
                 savedSelection = SavedTrainSelection.FromJob(starting); savedSelection.Save(SelectionFile);
                 await RestoreSavedSelection();
                 if (!queueRunning || run != queueGeneration || closing) return;
                 mouseRefreshIntervalSeconds = starting.IntervalSeconds; mouseRefreshLimit = starting.Limit; mouseRefreshJitterPercent = starting.JitterPercent;
+                mouseRefreshUnlimited = starting.Unlimited; mouseBookingCompletionMode = starting.CompletionMode;
                 await StartMouseBooking(true, starting);
                 if (!queueRunning || run != queueGeneration || closing) return;
                 if (!mouseBookingActive) throw new InvalidOperationException(status.Text);

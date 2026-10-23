@@ -10,17 +10,61 @@ internal sealed partial class MainWindow
 {
     bool mouseAutoRefresh, mouseRefreshOnly, mouseRefreshPending, mouseRefreshSawChange;
     bool mouseRefreshSiteBlocked;
-    int mouseRefreshIntervalSeconds = 60, mouseRefreshLimit = 10, mouseRefreshCount;
+    int mouseRefreshIntervalSeconds = 60, mouseRefreshLimit = 10;
+    long mouseRefreshCount;
+    bool mouseRefreshUnlimited, mouseRefreshProgressStarted;
+    BookingCompletionMode mouseBookingCompletionMode = BookingCompletionMode.Any;
+    readonly Label refreshProgress = new Label { AccessibleName = "누적 조회 및 남은 시간" };
+    System.Windows.Forms.Timer refreshDisplayTimer;
     int mouseRefreshJitterPercent;
     readonly Random mouseRefreshRandom = new Random();
     string mouseRefreshQuery, mouseRefreshBaseline, mouseRefreshStableKey;
     double mouseRefreshRevision;
     DateTime mouseRefreshNext, mouseRefreshSent, mouseRefreshStableSince;
 
+    RefreshOptions CurrentRefreshOptions()
+    { return new RefreshOptions(mouseRefreshIntervalSeconds, mouseRefreshLimit, mouseRefreshJitterPercent, mouseRefreshUnlimited, mouseBookingCompletionMode); }
+
+    bool MouseRefreshLimitReached { get { return !mouseRefreshUnlimited && mouseRefreshCount >= mouseRefreshLimit; } }
+
+    string CurrentMouseRefreshCountText()
+    { return mouseRefreshCount.ToString(CultureInfo.InvariantCulture) + (mouseRefreshUnlimited ? "회 · 무한 반복" : "/" + mouseRefreshLimit.ToString(CultureInfo.InvariantCulture) + "회"); }
+
+    static string RefreshSecondsRemaining(DateTime deadline, DateTime now)
+    { return Math.Max(0, (deadline - now).TotalSeconds).ToString("0.00", CultureInfo.InvariantCulture) + "초"; }
+
+    void UpdateRefreshProgress()
+    {
+        if (closing || refreshProgress.IsDisposed) return;
+        if (!mouseRefreshProgressStarted) { refreshProgress.Text = "추가 조회를 시작하면 누적 횟수와 남은 시간이 표시됩니다."; return; }
+        string phase = mousePaused ? "일시정지" : !mouseBookingActive ? (queueRunning ? (queueStage == "notifying" ? "예약 알림 처리 중" : "다음 조회 준비 중") : "대기 / 종료")
+            : mouseRefreshPending ? "결과 확인 중"
+            : !mouseAutoRefresh || mousePhase != "select" ? "예약 처리 중"
+            : mouseMorePending || mouseReadAll ? "더보기 확인 중"
+            : "재조회까지 " + RefreshSecondsRemaining(mouseRefreshNext, DateTime.UtcNow);
+        refreshProgress.Text = "누적 추가 조회 시도 " + CurrentMouseRefreshCountText() + " · " + phase;
+    }
+
+    void StartRefreshDisplay()
+    {
+        mouseRefreshProgressStarted = true;
+        if (refreshDisplayTimer == null)
+        {
+            // Presentation only: never increase the WebView/read/input frequency.
+            refreshDisplayTimer = new System.Windows.Forms.Timer { Interval = 50 };
+            refreshDisplayTimer.Tick += delegate { UpdateRefreshProgress(); };
+            FormClosed += delegate { refreshDisplayTimer.Stop(); refreshDisplayTimer.Dispose(); };
+        }
+        refreshDisplayTimer.Start();
+        UpdateRefreshProgress();
+    }
+
     void ResetMouseRefresh()
     {
         mouseAutoRefresh = mouseRefreshOnly = mouseRefreshPending = mouseRefreshSawChange = false;
         mouseRefreshQuery = mouseRefreshStableKey = mouseRefreshBaseline = null;
+        if (refreshDisplayTimer != null) refreshDisplayTimer.Stop();
+        UpdateRefreshProgress();
     }
 
     async Task OpenMouseRefresh()
@@ -31,11 +75,12 @@ internal sealed partial class MainWindow
         int run = mouseGeneration;
         await stopping;
         if (run != mouseGeneration || closing) return;
-        using (var dialog = new RefreshSettingsDialog(new RefreshOptions(mouseRefreshIntervalSeconds, mouseRefreshLimit, mouseRefreshJitterPercent), Font))
+        using (var dialog = new RefreshSettingsDialog(CurrentRefreshOptions(), Font))
         {
             if (dialog.ShowDialog(this) != DialogResult.OK) return;
             mouseRefreshIntervalSeconds = dialog.SelectedOptions.IntervalSeconds;
             mouseRefreshLimit = dialog.SelectedOptions.Limit; mouseRefreshJitterPercent = dialog.SelectedOptions.JitterPercent;
+            mouseRefreshUnlimited = dialog.SelectedOptions.Unlimited; mouseBookingCompletionMode = dialog.SelectedOptions.CompletionMode;
             if (dialog.BookWhenAvailable) await StartMouseBooking(true);
             else await StartMouseRefreshOnly();
         }
@@ -70,16 +115,18 @@ internal sealed partial class MainWindow
     async Task<bool> PrepareMouseRefresh(bool only, int run)
     {
         if (mouseRefreshSiteBlocked) throw new InvalidOperationException("이 실행에서 코레일 자동화 차단이 확인되었습니다. 자동 조회를 다시 시작하지 않습니다.");
-        new RefreshOptions(mouseRefreshIntervalSeconds, mouseRefreshLimit, mouseRefreshJitterPercent);
+        CurrentRefreshOptions();
         var plan = await ReadMouseRefresh(null);
         if (run != mouseGeneration || closing) return false;
         CheckRefreshPlan(plan);
         if (Get(plan, "state") != "ready") throw new InvalidOperationException("첫 조회 결과가 완전히 표시된 뒤 시작하세요.");
         mouseRefreshQuery = Get(plan, "queryFingerprint");
         if (String.IsNullOrEmpty(mouseRefreshQuery)) throw new InvalidOperationException("조회 조건을 고정하지 못했습니다.");
-        mouseAutoRefresh = true; mouseRefreshOnly = only; mouseRefreshPending = false; mouseRefreshCount = 0;
-        RefreshLog("start", "interval=" + mouseRefreshIntervalSeconds + ", jitterPercent=" + mouseRefreshJitterPercent + ", limit=" + mouseRefreshLimit + ", queryOnly=" + only);
+        mouseAutoRefresh = true; mouseRefreshOnly = only; mouseRefreshPending = false;
+        mouseRefreshCount = queueRunning && queueJob != null ? queueJob.RefreshCount : 0;
+        RefreshLog("start", "interval=" + mouseRefreshIntervalSeconds + ", jitterPercent=" + mouseRefreshJitterPercent + ", limit=" + (mouseRefreshUnlimited ? "unlimited" : mouseRefreshLimit.ToString(CultureInfo.InvariantCulture)) + ", queryOnly=" + only);
         ScheduleNextMouseRefresh(DateTime.UtcNow);
+        StartRefreshDisplay();
         return true;
     }
 
@@ -104,7 +151,7 @@ internal sealed partial class MainWindow
             if (!AutomationAvailable()) return;
             siteDiagnostics.AddAction("start");
             StartMouseLoop();
-            status.Text = "조회만 진행 · " + Math.Max(0, Math.Ceiling((mouseRefreshNext - DateTime.UtcNow).TotalSeconds)) + "초 뒤 첫 마우스 조회 · F8로 중지";
+            status.Text = "조회만 진행 · " + RefreshSecondsRemaining(mouseRefreshNext, DateTime.UtcNow) + " 뒤 첫 조회 · F8로 중지";
         }
         catch (Exception ex) { if (run == mouseGeneration) StopMouseBooking("자동 조회 시작 실패: " + ex.Message); }
     }
@@ -133,17 +180,17 @@ internal sealed partial class MainWindow
             if ((now - mouseRefreshStableSince).TotalMilliseconds < 750) return;
             mouseRefreshPending = false; mouseScrollCount = 0;
             mouseMoreCount = mouseMoreScrollCount = 0; mouseMoreStableKey = null; mouseMoreBaseline = null;
-            if (mouseRefreshCount < mouseRefreshLimit) ScheduleNextMouseRefresh(now);
+            if (!MouseRefreshLimitReached) ScheduleNextMouseRefresh(now);
             RefreshLog("result", "count=" + mouseRefreshCount + ", rows=" + Get(plan, "count"));
-            status.Text = "마우스 재조회 " + mouseRefreshCount + "/" + mouseRefreshLimit + "회 결과 갱신 확인";
-            if (mouseRefreshOnly && mouseRefreshCount >= mouseRefreshLimit) StopMouseBooking(status.Text + " · 완료");
+            status.Text = "재조회 " + CurrentMouseRefreshCountText() + " 결과 갱신 확인";
+            if (mouseRefreshOnly && MouseRefreshLimitReached) StopMouseBooking(status.Text + " · 완료");
             return;
         }
-        if (mouseRefreshCount >= mouseRefreshLimit) { StopMouseBooking("설정한 추가 조회 " + mouseRefreshLimit + "회를 마쳐 중지했습니다."); return; }
+        if (MouseRefreshLimitReached) { StopMouseBooking("설정한 추가 조회 " + mouseRefreshLimit + "회를 마쳐 중지했습니다."); return; }
         if (state != "ready") throw new InvalidOperationException("요청하지 않은 로딩 상태가 나타나 자동 조회를 중지했습니다.");
         if (now < mouseRefreshNext)
         {
-            status.Text = (mouseRefreshOnly ? "조회만" : "선택 열차 매진") + " · " + Math.Ceiling((mouseRefreshNext - now).TotalSeconds) + "초 뒤 마우스 재조회 · " + mouseRefreshCount + "/" + mouseRefreshLimit + "회 · F8 중지";
+            status.Text = (mouseRefreshOnly ? "조회만" : "선택 열차 매진") + " · " + RefreshSecondsRemaining(mouseRefreshNext, now) + " 뒤 재조회 · " + CurrentMouseRefreshCountText() + " · F8 중지";
             return;
         }
         var action = ObjectValue(plan, "action");
@@ -182,9 +229,13 @@ internal sealed partial class MainWindow
         if (NativeMouseInput.IsStopPressed()) throw new InvalidOperationException("F8로 중지했습니다.");
         if (NativeMouseInput.ForeignInputVersion() != mouseLastInput) { InterruptMouseBooking("재조회 전 직접 입력 감지"); return; }
         if (!InputWindowReady()) { InterruptMouseBooking("재조회 대상 창 비활성"); return; }
+        if (!AutomationAvailable()) { StopMouseBooking(status.Text); return; }
         mouseRefreshRevision = NumberValue(fresh, "revision"); mouseRefreshBaseline = Get(fresh, "fingerprint");
         mouseRefreshSawChange = false; mouseRefreshStableKey = null; mouseRefreshPending = true;
-        mouseRefreshCount++; mouseRefreshSent = DateTime.UtcNow; mouseScrollCount = 0;
+        mouseRefreshCount = checked(mouseRefreshCount + 1);
+        RecordQueuedRefreshCount(mouseRefreshCount);
+        mouseRefreshSent = DateTime.UtcNow; mouseScrollCount = 0;
+        UpdateRefreshProgress();
         RefreshLog("attempt", "count=" + mouseRefreshCount);
         if (!AutomationAvailable()) { StopMouseBooking(status.Text); return; }
         siteDiagnostics.AddAction(BackgroundInputEnabled ? "page-query" : "native-query");

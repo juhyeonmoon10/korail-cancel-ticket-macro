@@ -20,7 +20,7 @@ internal sealed partial class MainWindow
         var sidebar = new Panel { Dock = DockStyle.Fill, BackColor = UiTheme.Surface, Margin = Padding.Empty, Padding = new Padding(16, 20, 16, 16) };
         var brand = new Panel { Dock = DockStyle.Top, Height = 100 };
         brand.Controls.Add(new Label { Text = "한 장 도우미", Font = new Font(Font.FontFamily, 16, FontStyle.Bold), ForeColor = UiTheme.Text, AutoSize = true, Location = new Point(0, 4) });
-        brand.Controls.Add(new Label { Text = "KORAIL HELPER  /  0.10.0", Font = new Font(Font.FontFamily, 8), ForeColor = UiTheme.Muted, AutoSize = true, Location = new Point(2, 48) });
+        brand.Controls.Add(new Label { Text = "KORAIL HELPER  /  0.11.0", Font = new Font(Font.FontFamily, 8), ForeColor = UiTheme.Muted, AutoSize = true, Location = new Point(2, 48) });
         var nav = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, Padding = Padding.Empty };
         AddNavButton(nav, "코레일 열기", delegate { Navigate("https://www.korail.com/ticket/main"); });
         AddNavButton(nav, "예약 관리", async delegate { await OpenBookingQueue(); }).Enabled = !Program.ManualDiagnostic;
@@ -42,7 +42,7 @@ internal sealed partial class MainWindow
         var commands = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 1, RowCount = 2, AutoSize = true, Padding = new Padding(0, 0, 0, 12), Margin = Padding.Empty };
         commands.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         commands.RowStyles.Add(new RowStyle(SizeType.AutoSize)); commands.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        commands.Controls.Add(new Label { Text = "후보 중 한 편 예약 · 다음 일정은 예약 관리", AutoSize = true, Font = new Font(Font.FontFamily, 14, FontStyle.Bold), Margin = new Padding(0, 0, 0, 12) }, 0, 0);
+        commands.Controls.Add(new Label { Text = "한 편 또는 모두 예약 · 다음 일정은 예약 관리", AutoSize = true, Font = new Font(Font.FontFamily, 14, FontStyle.Bold), Margin = new Padding(0, 0, 0, 12) }, 0, 0);
         var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true, Margin = Padding.Empty, Padding = Padding.Empty };
         refreshButton = AddActionButton(actions, "선택 열차 시작", async delegate { await OpenMouseRefresh(); }, "primary");
         bookingButton = refreshButton;
@@ -71,9 +71,9 @@ internal sealed partial class MainWindow
         view.Dock = DockStyle.Fill; view.DefaultBackgroundColor = Color.White;
         browser.Controls.Add(view); browser.Controls.Add(locationBar);
 
-        var feedback = new TableLayoutPanel { Dock = DockStyle.Bottom, Height = 146, ColumnCount = 1, RowCount = 3, BackColor = UiTheme.Surface, Padding = new Padding(14, 10, 14, 8), Margin = Padding.Empty };
+        var feedback = new TableLayoutPanel { Dock = DockStyle.Bottom, Height = 174, ColumnCount = 1, RowCount = 4, BackColor = UiTheme.Surface, Padding = new Padding(14, 10, 14, 8), Margin = Padding.Empty };
         feedback.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        feedback.RowStyles.Add(new RowStyle(SizeType.Absolute, 28)); feedback.RowStyles.Add(new RowStyle(SizeType.Absolute, 46)); feedback.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        feedback.RowStyles.Add(new RowStyle(SizeType.Absolute, 28)); feedback.RowStyles.Add(new RowStyle(SizeType.Absolute, 46)); feedback.RowStyles.Add(new RowStyle(SizeType.Absolute, 28)); feedback.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         var stateHeading = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, Margin = Padding.Empty };
         stateHeading.Controls.Add(new Label { Text = "실행 상태", AutoSize = true, Font = new Font(Font, FontStyle.Bold), Margin = new Padding(0, 3, 0, 0) });
         stateHeading.Controls.Add(shellState);
@@ -91,7 +91,10 @@ internal sealed partial class MainWindow
         if (Program.ManualDiagnostic) notificationStatus.Text = "수동 진단 모드 · 자동 예약·알림 없음 · 기존 브라우저 세션 유지";
         ShowSleepStatus(false);
         details.Controls.Add(notificationStatus, 0, 0); details.Controls.Add(sleepStatus, 1, 0);
-        feedback.Controls.Add(stateHeading, 0, 0); feedback.Controls.Add(status, 0, 1); feedback.Controls.Add(details, 0, 2);
+        refreshProgress.Dock = DockStyle.Fill; refreshProgress.AutoEllipsis = true;
+        refreshProgress.ForeColor = UiTheme.Accent; refreshProgress.Font = new Font(Font.FontFamily, 9);
+        refreshProgress.Margin = new Padding(0, 0, 0, 4); UpdateRefreshProgress();
+        feedback.Controls.Add(stateHeading, 0, 0); feedback.Controls.Add(status, 0, 1); feedback.Controls.Add(refreshProgress, 0, 2); feedback.Controls.Add(details, 0, 3);
         foreach (var label in new [] { status, notificationStatus, sleepStatus })
         {
             var observed = label;
@@ -129,6 +132,7 @@ internal sealed partial class MainWindow
         if (BackgroundInputEnabled) shellState.Text += " · 동시 작업";
         shellState.BackColor = blocked ? Color.FromArgb(255, 233, 235) : mousePaused ? Color.FromArgb(255, 243, 218) : mouseBookingActive ? Color.FromArgb(228, 242, 235) : Color.FromArgb(234, 239, 248);
         shellState.ForeColor = blocked ? UiTheme.Danger : mousePaused ? Color.FromArgb(139, 89, 13) : mouseBookingActive ? Color.FromArgb(30, 111, 78) : UiTheme.Muted;
+        UpdateRefreshProgress();
     }
 
     async Task RenderShellPreview(string name)

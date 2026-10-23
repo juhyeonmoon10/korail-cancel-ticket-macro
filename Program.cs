@@ -18,8 +18,8 @@ using Microsoft.Win32;
 
 [assembly: AssemblyTitle("코레일 한 장 도우미 PC")]
 [assembly: AssemblyDescription("개인용 열차 예매 보조 도구 - 비공식")]
-[assembly: AssemblyVersion("0.10.0.0")]
-[assembly: AssemblyFileVersion("0.10.0.0")]
+[assembly: AssemblyVersion("0.11.0.0")]
+[assembly: AssemblyFileVersion("0.11.0.0")]
 
 internal static class Program
 {
@@ -46,7 +46,7 @@ internal static class Program
             if (!created) { MessageBox.Show("이미 실행 중입니다. 열린 코레일 도우미 창을 사용하세요.", "코레일 한 장 도우미"); return 2; }
             try
             {
-                BundleRoot = Path.Combine(DataRoot, "app-0.10.0");
+                BundleRoot = Path.Combine(DataRoot, "app-0.11.0");
                 Extract();
                 AppDomain.CurrentDomain.AssemblyResolve += delegate(object sender, ResolveEventArgs eventArgs)
                 {
@@ -129,7 +129,7 @@ internal sealed partial class MainWindow : Form
     TaskCompletionSource<bool> loadWaiter;
     public MainWindow()
     {
-        Text = "코레일 한 장 도우미 PC 0.10.0 · " + (Program.ManualDiagnostic ? "수동 진단 · 자동 기능 꺼짐" : "비공식");
+        Text = "코레일 한 장 도우미 PC 0.11.0 · " + (Program.ManualDiagnostic ? "수동 진단 · 자동 기능 꺼짐" : "비공식");
         settings = AppSettings.Load(Path.Combine(Program.DataRoot, "settings.json"));
         ClientSize = new Size(1320, 900); MinimumSize = new Size(1000, 760);
         StartPosition = FormStartPosition.CenterScreen; Font = new Font("맑은 고딕", 10);
@@ -679,6 +679,31 @@ internal sealed partial class MainWindow : Form
                 Assert(accepted.DialogResult == DialogResult.OK && accepted.SelectedOptions.IntervalSeconds == 5 && accepted.SelectedOptions.Limit == 999999,
                     "refresh dialog: accepting typed values returns the exact five-second and 999999-query settings without native input");
                 accepted.Close();
+            }
+            using (var unlimited = new RefreshSettingsDialog(new RefreshOptions(5, 10, 0), Font))
+            {
+                unlimited.ShowInTaskbar = false; unlimited.Opacity = 0; unlimited.Show(this);
+                var count = unlimited.Controls.OfType<TextBox>().Single(control => control.AccessibleName == "추가 조회 횟수");
+                var toggle = unlimited.Controls.OfType<CheckBox>().Single(control => control.Name == "refreshUnlimited");
+                var book = unlimited.Controls.OfType<CheckBox>().Single(control => control.Name == "bookWhenAvailable");
+                var mode = unlimited.Controls.OfType<ComboBox>().Single(control => control.Name == "bookingCompletionMode");
+                var start = unlimited.Controls.OfType<Button>().Single(control => control.AccessibleName == "자동 조회 시작");
+                Assert(!toggle.Checked && mode.SelectedIndex == 0 && !mode.Enabled,
+                    "refresh dialog: finite and any-success defaults preserve existing behavior");
+                count.Text = "invalid"; toggle.Checked = true;
+                Assert(!count.Enabled && start.Enabled && count.Text == "invalid",
+                    "refresh dialog: unlimited ignores disabled count without modifying the entered text");
+                toggle.Checked = false;
+                Assert(count.Enabled && !start.Enabled,
+                    "refresh dialog: returning to finite requires a valid count again");
+                count.Text = "10"; toggle.Checked = true; book.Checked = true; mode.SelectedIndex = 1;
+                Assert(mode.Enabled, "refresh dialog: booking enables the all-versus-any completion choice");
+                SaveDialogPreview(unlimited, "refresh-unlimited-preview.png");
+                start.PerformClick();
+                Assert(unlimited.DialogResult == DialogResult.OK && unlimited.BookWhenAvailable && unlimited.SelectedOptions.Unlimited &&
+                    unlimited.SelectedOptions.CompletionMode == BookingCompletionMode.All,
+                    "refresh dialog: unlimited all-candidates settings survive acceptance without starting automation");
+                unlimited.Close();
             }
         }
         finally { mouseRefreshIntervalSeconds = savedInterval; mouseRefreshJitterPercent = savedJitter; mouseRefreshNext = savedNext; }

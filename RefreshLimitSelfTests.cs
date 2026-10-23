@@ -10,9 +10,11 @@ internal sealed partial class MainWindow
     {
         if (!Program.SelfTest) throw new InvalidOperationException("로컬 모의 검사 전용입니다.");
         int savedInterval = mouseRefreshIntervalSeconds, savedLimit = mouseRefreshLimit, savedJitter = mouseRefreshJitterPercent;
+        bool savedUnlimited = mouseRefreshUnlimited;
         int notificationsBefore = demoNotifications.Count;
         try
         {
+            mouseRefreshUnlimited = false;
             mouseRefreshIntervalSeconds = 5; mouseRefreshLimit = 999999; mouseRefreshJitterPercent = 0;
             await PrepareMousePauseFixture(false, false);
             DateTime beforePrepare = DateTime.UtcNow;
@@ -87,6 +89,49 @@ internal sealed partial class MainWindow
             await TickMouseRefresh(mouseGeneration);
             Assert(!mouseBookingActive && !mouseRefreshPending && mouseRefreshCount == Int32.MaxValue && status.Text.Contains("완료"),
                 "refresh limits: confirmation of the last permitted result completes without overflow or rescheduling");
+
+            await PrepareMousePauseFixture(false, false);
+            mouseRefreshUnlimited = true; mouseRefreshLimit = 1;
+            Assert(await PrepareMouseRefresh(true, mouseGeneration), "unlimited refresh: a separate explicit option starts without a finite stop");
+            mouseRefreshCount = (long)Int32.MaxValue + 123;
+            mouseRefreshNext = DateTime.UtcNow.AddHours(1);
+            long unlimitedCount = mouseRefreshCount; DateTime unlimitedNext = mouseRefreshNext;
+            await TickMouseRefresh(mouseGeneration);
+            UpdateRefreshProgress();
+            Assert(mouseBookingActive && mouseRefreshCount == unlimitedCount && mouseRefreshNext == unlimitedNext && !MouseRefreshLimitReached,
+                "unlimited refresh: counts above Int32 maximum keep waiting despite dormant limit one");
+            Assert(refreshProgress.Text.Contains(unlimitedCount.ToString(CultureInfo.InvariantCulture)) && refreshProgress.Text.Contains("무한 반복"),
+                "unlimited refresh: independent live progress displays the accumulated attempt count");
+            Assert(RefreshSecondsRemaining(clock.AddMilliseconds(1230), clock) == "1.23초" &&
+                RefreshSecondsRemaining(clock.AddSeconds(5), clock) == "5.00초" &&
+                RefreshSecondsRemaining(clock.AddMilliseconds(-1), clock) == "0.00초",
+                "countdown: exact two decimal places and nonnegative overdue time");
+            string priorStatus = status.Text;
+            UpdateRefreshProgress();
+            Assert(status.Text == priorStatus && refreshDisplayTimer.Interval == 50,
+                "countdown: the presentation timer leaves phase status and the automation loop unchanged");
+            var unlimitedPlan = await ReadMouseRefresh(mouseRefreshQuery);
+            mouseRefreshPending = true; mouseRefreshSent = DateTime.UtcNow; mouseRefreshSawChange = true;
+            mouseRefreshRevision = NumberValue(unlimitedPlan, "revision"); mouseRefreshBaseline = Get(unlimitedPlan, "fingerprint");
+            mouseRefreshStableKey = mouseRefreshRevision.ToString(CultureInfo.InvariantCulture) + "|" + mouseRefreshBaseline;
+            mouseRefreshStableSince = DateTime.UtcNow.AddSeconds(-2);
+            await TickMouseRefresh(mouseGeneration);
+            unlimitedNext = mouseRefreshNext;
+            Assert(mouseBookingActive && !mouseRefreshPending && mouseRefreshCount == unlimitedCount && mouseRefreshNext > DateTime.UtcNow,
+                "unlimited refresh: a confirmed result schedules the next wait even past the dormant finite limit");
+            mouseRefreshPending = true; mouseRefreshSent = DateTime.UtcNow.AddSeconds(-31);
+            bool unlimitedTimeout = false;
+            try { await TickMouseRefresh(mouseGeneration); }
+            catch (InvalidOperationException ex) { unlimitedTimeout = ex.Message.Contains("30초"); }
+            Assert(unlimitedTimeout && mouseRefreshCount == unlimitedCount,
+                "unlimited refresh: request confirmation timeout still prevents another query");
+            mouseRefreshPending = false;
+            InterruptMouseBooking("무한 조회 일시정지 검사"); UpdateRefreshProgress();
+            Assert(mousePaused && mouseRefreshCount == unlimitedCount && mouseRefreshNext == unlimitedNext && refreshProgress.Text.Contains("일시정지"),
+                "unlimited refresh: pausing retains the large count and original deadline");
+            StopMouseBooking(null); UpdateRefreshProgress();
+            Assert(mouseRefreshCount == unlimitedCount && refreshProgress.Text.Contains(unlimitedCount.ToString(CultureInfo.InvariantCulture)) && !refreshDisplayTimer.Enabled,
+                "unlimited refresh: stopping preserves the last count and stops the display ticker");
             Assert(demoNotifications.Count == notificationsBefore && await EvalBool("(() => {const s=__cardDemo.snapshot();return s.gradeClicks===0 && s.reserveClicks===0 && s.filterQueries===0 && s.mainQueries===0;})()"),
                 "refresh limit tests: no seat, reservation, refresh or notification is emitted");
             Assert((mouseBookingTimer == null || !mouseBookingTimer.Enabled) && !sleepPrevention.Active,
@@ -103,6 +148,7 @@ internal sealed partial class MainWindow
             mouseRefreshCount = 0; mouseRefreshRevision = 0;
             mouseRefreshNext = mouseRefreshSent = mouseRefreshStableSince = default(DateTime);
             mouseRefreshIntervalSeconds = savedInterval; mouseRefreshLimit = savedLimit; mouseRefreshJitterPercent = savedJitter;
+            mouseRefreshUnlimited = savedUnlimited; UpdateRefreshProgress();
             ShowMouseContinue();
         }
     }

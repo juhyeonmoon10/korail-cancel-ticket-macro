@@ -122,6 +122,53 @@ internal sealed partial class MainWindow
                     "queue manager preview: opening and resizing never requests an actual booking");
                 dialog.Close();
             }
+
+            // The same host handoff must retain partial All progress and must
+            // never consume an unrelated saved journey for a direct batch.
+            queueStore = new BookingQueueStore(Path.Combine(directory, "all-queue.json"));
+            var unrelated = queueStore.Add(new[] { QueueFixtureTarget(801) }, new RefreshOptions(5, 10, 0));
+            var all = queueStore.Add(new[] { QueueFixtureTarget(811), QueueFixtureTarget(813) }, new RefreshOptions(5, 2, 0, true, BookingCompletionMode.All));
+            queueJob = queueStore.BeginSelected(all.Id); queueOnlyJobId = all.Id;
+            queueRunning = true; queueStage = "booking"; queueGeneration++;
+            RecordQueuedRefreshCount((long)Int32.MaxValue + 2);
+            var allFirst = attempts.Begin(all.Targets[1]); BindQueuedAttempt(allFirst);
+            attempts.MarkSubmitted(allFirst.Id);
+            attempts.RecordConfirmed(allFirst.Id, BookingReceipt.CreateConfirmed(allFirst.Target, allFirst.Target, "3456-7890", null));
+            int allGeneration = ConfirmQueuedBooking(attempts.Get(allFirst.Id));
+            Assert(queueStage == "notifying" && queueJob.State == BookingQueueState.Pending && queueJob.ConfirmedCount == 1 &&
+                queueOnlyJobId == all.Id && queueJob.RemainingTargets().Single().Key == all.Targets[0].Key && queueJob.RefreshCount == (long)Int32.MaxValue + 2,
+                "All host handoff: first receipt retains only remaining candidate and cumulative long count in same isolated batch");
+            mouseBookingActive = true; mouseSubmitted = false; mouseStore = attempts; mouseAttemptId = allFirst.Id;
+            StopMouseBooking(null);
+            Assert(queueRunning && queueStage == "notifying" && queueStore.Get(unrelated.Id).State == BookingQueueState.Pending && queueOnlyJobId == all.Id,
+                "All host handoff: disarming confirmed native child preserves isolated scope and unrelated queue items");
+            StopBookingQueue("모의 전체 예약 알림 대기 중 중지");
+            ContinueQueueAfterNotification(allGeneration);
+            Assert(!queueRunning && queueOnlyJobId == null && queueStore.Get(all.Id).State == BookingQueueState.Pending && queueStore.Get(all.Id).ConfirmedCount == 1 &&
+                queueStore.Get(unrelated.Id).State == BookingQueueState.Pending,
+                "All host stop: late notification cannot restart batch or earlier saved journeys and confirmed progress survives");
+
+            queueJob = queueStore.BeginSelected(all.Id); queueOnlyJobId = all.Id;
+            queueRunning = true; queueStage = "booking"; queueGeneration++;
+            mouseAutoRefresh = true; mouseRefreshOnly = false; mouseRefreshQuery = queueJob.QueryJson;
+            mouseTargets = queueJob.RemainingTargets();
+            var resumed = QueuedMouseResumeSelection(json.Deserialize<Dictionary<string, object>>(queueJob.QueryJson));
+            Assert(resumed.Count == 1 && resumed[0].Key == all.Targets[0].Key,
+                "All host resume: durable full selection validates against only the still-unbooked native candidate");
+            mouseTargets = all.Targets.Select(target => target.Copy()).ToList();
+            ExpectQueueHostRejected(delegate { QueuedMouseResumeSelection(json.Deserialize<Dictionary<string, object>>(queueJob.QueryJson)); },
+                "All host resume: reintroducing an already confirmed candidate fails before any input");
+            mouseTargets = resumed;
+            var allLast = attempts.Begin(resumed[0]); BindQueuedAttempt(allLast);
+            ExpectQueueHostRejected(delegate { ConfirmQueuedBooking(attempts.Get(allFirst.Id)); },
+                "All host late receipt: a prior confirmed candidate cannot interrupt or advance the next bound attempt");
+            attempts.MarkSubmitted(allLast.Id);
+            attempts.RecordConfirmed(allLast.Id, BookingReceipt.CreateConfirmed(allLast.Target, allLast.Target, "4567-8901", null));
+            ConfirmQueuedBooking(attempts.Get(allLast.Id));
+            Assert(queueJob.State == BookingQueueState.Completed && queueJob.ConfirmedCount == 2 && queueJob.RemainingTargets().Count == 0 &&
+                queueStore.Get(unrelated.Id).State == BookingQueueState.Pending,
+                "All host completion: last distinct receipt finishes entire batch without consuming unrelated saved work");
+            StopBookingQueue("모의 전체 예약 검사 완료");
             Assert(demoNotifications.Count == notificationsBefore && view.CoreWebView2.Source == sourceBefore && !sleepPrevention.Active,
                 "queue host tests: no navigation, live reservation, Telegram message or sleep session is started");
         }

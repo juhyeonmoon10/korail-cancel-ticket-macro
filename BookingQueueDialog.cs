@@ -71,7 +71,7 @@ internal sealed class BookingQueueDialog : Form
         table.AlternatingRowsDefaultCellStyle.BackColor = Color.FromArgb(248, 250, 253);
         table.AccessibleName = "예약 순서 목록";
         AddColumn("order", "순서", 60); AddColumn("state", "상태", 92); AddColumn("date", "날짜", 112); AddColumn("route", "구간", 164);
-        var trains = new DataGridViewTextBoxColumn { Name = "trains", HeaderText = "후보 열차 · 한 편만 예약", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, MinimumWidth = 190, SortMode = DataGridViewColumnSortMode.NotSortable };
+        var trains = new DataGridViewTextBoxColumn { Name = "trains", HeaderText = "선택 열차 · 완료 조건", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, MinimumWidth = 190, SortMode = DataGridViewColumnSortMode.NotSortable };
         table.Columns.Add(trains); layout.Controls.Add(table, 0, 3);
 
         var edit = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, Margin = Padding.Empty, Padding = Padding.Empty };
@@ -145,10 +145,10 @@ internal sealed class BookingQueueDialog : Form
         foreach (var job in jobs)
         {
             var first = job.Targets[0];
-            string trains = String.Join(", ", job.Targets.Select(t => t.Train + " " + t.Departure));
+            string trains = (job.CompletionMode == BookingCompletionMode.All ? "모두 " + job.ConfirmedCount + "/" + job.Targets.Count + " · " : "한 편 · ") + String.Join(", ", job.Targets.Select(t => t.Train + " " + t.Departure));
             int index = table.Rows.Add((table.Rows.Count + 1).ToString(CultureInfo.InvariantCulture), StateLabel(job.State), first.Date, first.DepartureStation + " → " + first.ArrivalStation, trains);
             var row = table.Rows[index]; row.Tag = job.Id;
-            row.Cells[4].ToolTipText = trains + "\n" + first.Grade + " · 1명 · 후보 중 한 편 성공 시 이 항목 완료";
+            row.Cells[4].ToolTipText = trains + "\n" + first.Grade + " · 각 1명 · " + (job.CompletionMode == BookingCompletionMode.All ? "선택한 모든 열차의 예약이 확인되면 완료" : "선택한 열차 중 한 편 성공 시 완료");
             if (job.State == BookingQueueState.Completed) row.Cells[1].Style.ForeColor = Color.FromArgb(30, 111, 78);
             else if (job.State == BookingQueueState.NeedsReview) row.Cells[1].Style.ForeColor = UiTheme.Danger;
         }
@@ -157,11 +157,11 @@ internal sealed class BookingQueueDialog : Form
         if (selected < 0) selected = jobs.FindIndex(j => j.State == BookingQueueState.Pending || j.State == BookingQueueState.NeedsReview);
         if (selected < 0 && jobs.Count > 0) selected = 0;
         if (selected >= 0) { table.Rows[selected].Selected = true; table.CurrentCell = table.Rows[selected].Cells[0]; }
-        summary.Text = "한 줄이 예약 한 건입니다. 후보 중 한 편을 예약하면 다음 줄로 진행합니다.\n대기 " + jobs.Count(j => j.State == BookingQueueState.Pending) + "건  ·  완료 " + jobs.Count(j => j.State == BookingQueueState.Completed) + "건  ·  전체 " + jobs.Count + "/20건  ·  결제는 직접 진행하세요.";
+        summary.Text = "각 줄의 완료 조건(한 편 / 모두)을 충족하면 다음 줄로 진행합니다.\n대기 " + jobs.Count(j => j.State == BookingQueueState.Pending) + "건  ·  완료 " + jobs.Count(j => j.State == BookingQueueState.Completed) + "건  ·  전체 " + jobs.Count + "/20건  ·  결제는 직접 진행하세요.";
         SelectionChanged();
         if (jobs.Count == 0) SetMessage("코레일에서 열차를 선택한 뒤 ‘현재 선택을 순서에 추가’를 누르세요.", false);
         else if (jobs.Any(j => j.State == BookingQueueState.NeedsReview)) SetMessage("‘결과 확인’ 항목이 있습니다. 공식 예약 내역을 확인한 뒤 진행하세요.", true);
-        else SetMessage("조회 간격과 횟수는 각 항목에 저장됩니다. 하나만 예약하려면 한 줄만 추가하세요.", false);
+        else SetMessage("조회 간격·횟수·완료 조건은 각 항목에 저장됩니다. 확인된 열차는 다시 예매하지 않습니다.", false);
     }
     BookingQueueJob SelectedJob() { return jobs.FirstOrDefault(j => j.Id == SelectedJobId); }
     void SelectionChanged()
@@ -173,7 +173,8 @@ internal sealed class BookingQueueDialog : Form
         {
             var target = selected.Targets[0];
             detail.Text = target.Date + " · " + target.DepartureStation + " → " + target.ArrivalStation + " · " + target.Grade + " · 1명\r\n"
-                + "조회 " + selected.IntervalSeconds.ToString(CultureInfo.InvariantCulture) + "초 / " + selected.Limit.ToString(CultureInfo.InvariantCulture) + "회 / ±" + selected.JitterPercent.ToString(CultureInfo.InvariantCulture) + "% · 후보 " + selected.Targets.Count + "편 중 한 편만 예약";
+                + "조회 " + selected.IntervalSeconds.ToString(CultureInfo.InvariantCulture) + "초 / " + (selected.Unlimited ? "무한 반복" : selected.Limit.ToString(CultureInfo.InvariantCulture) + "회") + " / ±" + selected.JitterPercent.ToString(CultureInfo.InvariantCulture) + "% · 누적 " + selected.RefreshCount + "회 · "
+                + (selected.CompletionMode == BookingCompletionMode.All ? "모두 예약 " + selected.ConfirmedCount + "/" + selected.Targets.Count : "한 편 성공 시 종료");
         }
         UpdateActions();
     }

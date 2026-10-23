@@ -57,11 +57,52 @@ internal static class RefreshOptionsTests
             var maximum = new RefreshOptions(Int32.MaxValue, Int32.MaxValue, 100);
             Check(maximum.IntervalSeconds == Int32.MaxValue && maximum.Limit == Int32.MaxValue && maximum.JitterPercent == 100,
                 "startup accepts full positive Int32 range without coercion");
+            Check(!maximum.Unlimited && maximum.CompletionMode == BookingCompletionMode.Any,
+                "existing constructor keeps finite queries and first successful train as defaults");
 
             RefreshOptions options; string error;
             RefreshOptions.TryParse("5", "999999", "0", out options, out error);
+            Check(!options.Unlimited && options.CompletionMode == BookingCompletionMode.Any,
+                "existing parser keeps finite queries and first successful train as defaults");
             Check(!RefreshOptions.TryParse("bad", "999999", "0", out options, out error) && options == null,
                 "invalid preview cannot reuse previously valid options");
+
+            Check(RefreshOptions.TryParse("5", "87", "20", true, BookingCompletionMode.All, out options, out error) &&
+                error == null && options.Unlimited && options.CompletionMode == BookingCompletionMode.All &&
+                options.IntervalSeconds == 5 && options.Limit == 87 && options.JitterPercent == 20,
+                "unlimited all-trains options preserve interval, dormant finite count and jitter");
+            Check(RefreshOptions.TryParse("5", "87", "20", false, BookingCompletionMode.All, out options, out error) &&
+                !options.Unlimited && options.CompletionMode == BookingCompletionMode.All && options.Limit == 87,
+                "all-trains completion can retain a finite shared query budget");
+            foreach (string value in new [] { null, "", "0", "-1", "invalid", "2147483648" })
+            {
+                Check(RefreshOptions.TryParse("5", value, "0", true, BookingCompletionMode.Any, out options, out error) &&
+                    error == null && options.Unlimited && options.Limit == 1,
+                    "unlimited execution ignores disabled count: " + (value ?? "null"));
+                Check(!RefreshOptions.TryParse("5", value, "0", false, BookingCompletionMode.Any, out options, out error) &&
+                    options == null && error.Contains("조회 횟수"),
+                    "returning to finite execution validates the count again: " + (value ?? "null"));
+            }
+            Check(!RefreshOptions.TryParse("0", "invalid", "0", true, BookingCompletionMode.Any, out options, out error) &&
+                options == null && error.Contains("조회 간격"),
+                "unlimited execution still rejects an invalid interval");
+            Check(!RefreshOptions.TryParse("5", "invalid", "101", true, BookingCompletionMode.All, out options, out error) &&
+                options == null && error.Contains("변동 폭"),
+                "unlimited execution still rejects an invalid jitter percentage");
+            foreach (int mode in new [] { -1, 2, Int32.MaxValue })
+            {
+                Check(!RefreshOptions.TryParse("5", "10", "0", true, (BookingCompletionMode)mode, out options, out error) &&
+                    options == null && error.Contains("완료 조건"),
+                    "parser rejects an unknown booking completion mode: " + mode);
+                bool rejected = false;
+                try { new RefreshOptions(5, 10, 0, true, (BookingCompletionMode)mode); }
+                catch (ArgumentOutOfRangeException exception) { rejected = exception.ParamName == "completionMode"; }
+                Check(rejected, "startup rejects an unknown booking completion mode: " + mode);
+            }
+            bool invalidDormantLimit = false;
+            try { new RefreshOptions(5, 0, 0, true, BookingCompletionMode.All); }
+            catch (ArgumentOutOfRangeException exception) { invalidDormantLimit = exception.ParamName == "limit"; }
+            Check(invalidDormantLimit, "constructor never treats a nonpositive count as an unlimited sentinel");
             Console.WriteLine("PASS " + checks + " refresh options checks (pure parsing; no UI, input or network).");
             return 0;
         }

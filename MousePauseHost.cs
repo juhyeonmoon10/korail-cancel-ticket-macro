@@ -120,9 +120,10 @@ internal sealed partial class MainWindow
         if (!queueRunning || queueStage != "booking" || queueJob == null || !mouseAutoRefresh || mouseRefreshOnly || String.IsNullOrEmpty(mouseRefreshQuery))
             throw new InvalidOperationException("재개할 예약 순서와 고정 조회 조건을 확인하지 못했습니다.");
         var current = QueueStore().Get(queueJob.Id);
+        var remaining = current == null ? null : current.RemainingTargets();
         if (current == null || current.State != BookingQueueState.Running || current.AttemptId != null || current.QueryJson != queueJob.QueryJson ||
-            mouseTargets == null || current.Targets.Count != mouseTargets.Count ||
-            current.Targets.Where((target, i) => target.Key != mouseTargets[i].Key || target.Train != mouseTargets[i].Train).Any())
+            mouseTargets == null || remaining.Count != mouseTargets.Count ||
+            remaining.Where((target, i) => target.Key != mouseTargets[i].Key || target.Train != mouseTargets[i].Train).Any())
             throw new InvalidOperationException("일시정지 중 예약 순서의 열차나 진행 상태가 바뀌었습니다. 예약 기록을 확인하세요.");
         // A queued candidate can still be below More, and the helper's ordinary
         // journey filter can differ from this job. Neither should erase the
@@ -130,9 +131,9 @@ internal sealed partial class MainWindow
         // at native start, including a legitimately advanced start time.
         var frozen = json.Deserialize<System.Collections.Generic.Dictionary<string, object>>(mouseRefreshQuery);
         frozen["supported"] = true;
-        if (SavedTrainSelection.QueryText(query, current.Targets) != SavedTrainSelection.QueryText(frozen, current.Targets))
+        if (SavedTrainSelection.QueryText(query, remaining) != SavedTrainSelection.QueryText(frozen, remaining))
             throw new InvalidOperationException("일시정지 중 예약 순서의 조회 조건이 바뀌었습니다. 다시 조회하세요.");
-        return current.Targets.Select(target => target.Copy()).ToList();
+        return remaining;
     }
 
     async Task ResumeMouseBooking()
@@ -156,7 +157,7 @@ internal sealed partial class MainWindow
             sleepPrevention.Start(); ShowSleepStatus(false);
             mouseLastInput = input;
             mousePaused = false; mousePauseSource = null; mouseGeneration++;
-            status.Text = mouseReadAll ? "더보기 포함 목록 읽기를 계속합니다 · F8 중지" : "기존 조건으로 계속합니다 · 조회 " + mouseRefreshCount + "/" + mouseRefreshLimit + "회 · F8 중지";
+            status.Text = mouseReadAll ? "더보기 포함 목록 읽기를 계속합니다 · F8 중지" : "기존 조건으로 계속합니다 · 조회 " + CurrentMouseRefreshCountText() + " · F8 중지";
         }
         catch (Exception ex) { if (run == mouseGeneration) StopMouseBooking("재개하지 못했습니다. " + ex.Message); }
         finally { mouseResuming = false; ShowMouseContinue(); }
