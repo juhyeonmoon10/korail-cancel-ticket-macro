@@ -137,6 +137,7 @@ internal sealed partial class MainWindow
         int run = mouseGeneration;
         await stopping;
         if (run != mouseGeneration || closing) return;
+        PrepareAutomationReports("자동 조회");
         try
         {
             mouseDemo = view.CoreWebView2.Source.StartsWith(LocalBase, StringComparison.Ordinal);
@@ -152,8 +153,9 @@ internal sealed partial class MainWindow
             siteDiagnostics.AddAction("start");
             StartMouseLoop();
             status.Text = "조회만 진행 · " + RefreshSecondsRemaining(mouseRefreshNext, DateTime.UtcNow) + " 뒤 첫 조회 · F8로 중지";
+            AutomationReportsStarted();
         }
-        catch (Exception ex) { if (run == mouseGeneration) StopMouseBooking("자동 조회 시작 실패: " + ex.Message); }
+        catch (Exception ex) { if (run == mouseGeneration) { ReportAutomationFailure("자동 조회 시작 실패: " + ex.Message, ex); StopMouseBooking("자동 조회 시작 실패: " + ex.Message); } }
     }
 
     async Task TickMouseRefresh(int run)
@@ -183,10 +185,11 @@ internal sealed partial class MainWindow
             if (!MouseRefreshLimitReached) ScheduleNextMouseRefresh(now);
             RefreshLog("result", "count=" + mouseRefreshCount + ", rows=" + Get(plan, "count"));
             status.Text = "재조회 " + CurrentMouseRefreshCountText() + " 결과 갱신 확인";
-            if (mouseRefreshOnly && MouseRefreshLimitReached) StopMouseBooking(status.Text + " · 완료");
+            ReportAutomationProgress();
+            if (mouseRefreshOnly && MouseRefreshLimitReached) StopMouseBooking(status.Text + " · 완료", true);
             return;
         }
-        if (MouseRefreshLimitReached) { StopMouseBooking("설정한 추가 조회 " + mouseRefreshLimit + "회를 마쳐 중지했습니다."); return; }
+        if (MouseRefreshLimitReached) { StopMouseBooking("설정한 추가 조회 " + mouseRefreshLimit + "회를 마쳐 중지했습니다.", true); return; }
         if (state != "ready") throw new InvalidOperationException("요청하지 않은 로딩 상태가 나타나 자동 조회를 중지했습니다.");
         if (now < mouseRefreshNext)
         {
@@ -235,6 +238,7 @@ internal sealed partial class MainWindow
         mouseRefreshRevision = NumberValue(fresh, "revision"); mouseRefreshBaseline = Get(fresh, "fingerprint");
         mouseRefreshSawChange = false; mouseRefreshStableKey = null; mouseRefreshPending = true;
         mouseRefreshCount = checked(mouseRefreshCount + 1);
+        RecordAutomationQueryAttempt();
         RecordQueuedRefreshCount(mouseRefreshCount);
         mouseRefreshSent = DateTime.UtcNow; mouseScrollCount = 0;
         UpdateRefreshProgress();

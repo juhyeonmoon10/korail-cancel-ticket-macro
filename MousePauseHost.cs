@@ -159,7 +159,7 @@ internal sealed partial class MainWindow
             mousePaused = false; mousePauseSource = null; mouseGeneration++;
             status.Text = mouseReadAll ? "더보기 포함 목록 읽기를 계속합니다 · F8 중지" : "기존 조건으로 계속합니다 · 조회 " + CurrentMouseRefreshCountText() + " · F8 중지";
         }
-        catch (Exception ex) { if (run == mouseGeneration) StopMouseBooking("재개하지 못했습니다. " + ex.Message); }
+        catch (Exception ex) { if (run == mouseGeneration) { ReportAutomationFailure("재개하지 못했습니다. " + ex.Message, ex); StopMouseBooking("재개하지 못했습니다. " + ex.Message); } }
         finally { mouseResuming = false; ShowMouseContinue(); }
     }
 }

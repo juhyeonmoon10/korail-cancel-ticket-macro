@@ -36,6 +36,7 @@ internal sealed partial class MainWindow
         mouseRefreshSiteBlocked = true;
         bookingButton.Enabled = refreshButton.Enabled = false;
         activeDocument = false; lease.Reset();
+        ReportAutomationFailure(SiteBlockMessage(), null, "site-block");
         StopBookingQueue(SiteBlockMessage());
         if (!alreadyBlocked) StopMouseBooking(SiteBlockMessage());
         status.Text = SiteBlockMessage();

@@ -105,6 +105,7 @@ internal sealed partial class MainWindow
         int startRun = mouseGeneration;
         await stopping;
         if (startRun != mouseGeneration || closing) return;
+        if (queuedJob == null) PrepareAutomationReports("자동 예매");
         try
         {
             mouseCompletionRecheck = false;
@@ -157,8 +158,9 @@ internal sealed partial class MainWindow
             StartMouseLoop();
             status.Text = (mouseDemo ? "[모의 연습] " : "") + mouseTarget.Date + " · " + String.Join(", ", mouseTargets.Select(target => target.Train)) + " · " + mouseTarget.Grade +
                 (enableRefresh && mouseBookingCompletionMode == BookingCompletionMode.All && !mouseDemo ? " 모두 예약 완료까지 · F8 중지" : " 중 한 편 확인 · F8 중지");
+            AutomationReportsStarted();
         }
-        catch (Exception ex) { if (startRun == mouseGeneration) StopMouseBooking("시작하지 못했습니다. " + ex.Message); }
+        catch (Exception ex) { if (startRun == mouseGeneration) { ReportAutomationFailure("자동 예매를 시작하지 못했습니다. " + ex.Message, ex); StopMouseBooking("시작하지 못했습니다. " + ex.Message); } }
     }
     async Task StartMouseCompletionCheck(string attemptId)
     {
@@ -189,7 +191,7 @@ internal sealed partial class MainWindow
         }
         catch (Exception ex) { if (startRun == mouseGeneration) StopMouseBooking("완료 확인을 시작하지 못했습니다. " + ex.Message); }
     }
-    void StopMouseBooking(string reason)
+    void StopMouseBooking(string reason, bool completed = false)
     {
         ReleaseSleepPrevention();
         bool wasActive = mouseBookingActive;
@@ -199,15 +201,17 @@ internal sealed partial class MainWindow
         ResetMouseRefresh();
         ResetMouseMore();
         try { NativeMouseInput.EndInputWatch(); }
-        catch { reason = "입력 감시를 정리하지 못해 기능을 중지했습니다. 프로그램을 다시 실행하세요."; }
+        catch (Exception ex) { reason = "입력 감시를 정리하지 못해 기능을 중지했습니다. 프로그램을 다시 실행하세요."; ReportAutomationFailure(reason, ex, "input-cleanup"); }
         if (mouseBookingTimer != null) mouseBookingTimer.Stop();
         if (wasActive && mouseSubmitted && mouseAttemptId != null && mouseStore != null)
         {
-            try { mouseStore.RecordUnknown(mouseAttemptId, reason ?? "앱 중지 또는 종료. 공식 화면에서 예약 결과 확인 필요."); } catch { }
+            try { mouseStore.RecordUnknown(mouseAttemptId, reason ?? "앱 중지 또는 종료. 공식 화면에서 예약 결과 확인 필요."); }
+            catch (Exception ex) { ReportAutomationFailure("예약 결과 미확인 기록을 저장하지 못했습니다. 공식 예약 내역을 확인하세요.", ex, "attempt-store"); }
         }
         mouseCompletionRecheck = false;
         mouseTargets = null;
-        QueueBookingStopped(reason);
+        QueueBookingStopped(reason, completed);
+        if (!queueRunning) StopAutomationReports(completed);
         if (!closing && reason != null) status.Text = reason;
         if (!closing) UpdateShellState();
     }
@@ -258,7 +262,7 @@ internal sealed partial class MainWindow
                 completedStore.RecordConfirmed(completedId, receipt);
                 int completedQueueGeneration = ConfirmQueuedBooking(completedStore.Get(completedId));
                 // Disarm before network I/O. A Telegram failure can never trigger another booking.
-                mouseSubmitted = false; StopMouseBooking(null);
+                mouseSubmitted = false; StopMouseBooking(null, true);
                 status.Text = "예약 완료 확인 · 미결제 · 공식 화면에 표시된 기한까지 직접 결제하세요.";
                 if (mouseDemo) { notificationStatus.Text = "모의 예약 완료 확인 · 실제 텔레그램 전송 없음"; return; }
                 try
@@ -272,10 +276,14 @@ internal sealed partial class MainWindow
                     if (!closing) notificationStatus.Text = success ? "예약 완료 · 텔레그램 알림 전송 완료" : "예약은 확인됐지만 알림 전송을 확인하지 못했습니다. " + sent;
                     ContinueQueueAfterNotification(completedQueueGeneration);
                 }
-                catch
+                catch (Exception ex)
                 {
                     if (!closing) notificationStatus.Text = "예약은 확인됐지만 알림 처리를 마치지 못했습니다. 실제 Telegram 대화를 확인하세요.";
-                    if (completedQueueGeneration == queueGeneration) StopBookingQueue("알림 처리 오류로 다음 예약을 시작하지 않았습니다.");
+                    if (completedQueueGeneration == queueGeneration && queueRunning)
+                    {
+                        ReportAutomationFailure("예약은 확인됐지만 완료 알림 처리 또는 기록 저장에 실패해 다음 예약을 시작하지 않았습니다.", ex, "completion-processing", "코레일 공식 예약 내역과 Telegram 대화를 확인하세요. 예약이 확인된 열차를 다시 예매하지 말고, 예약 관리에서 다음 일정의 상태를 확인하세요.");
+                        StopBookingQueue("알림 처리 오류로 다음 예약을 시작하지 않았습니다.");
+                    }
                 }
                 return;
             }
@@ -374,18 +382,18 @@ internal sealed partial class MainWindow
             await ClickAutomation(x, y, width, height, run);
             await Task.Delay(400);
         }
-        catch (Exception ex) { if (run == mouseGeneration) StopMouseBooking(ex.Message); }
+        catch (Exception ex) { if (run == mouseGeneration) { ReportAutomationFailure(ex.Message, ex); StopMouseBooking(ex.Message); } }
         finally { mouseBookingBusy = false; ShowMouseContinue(); }
     }
 
     void MouseScriptDialog(object sender, CoreWebView2ScriptDialogOpeningEventArgs e)
     {
         if (OfficialTicketSource(e.Uri)) ObserveSiteBlock(e.Message);
-        if (queueRunning && queueStage == "query") StopBookingQueue("조회 중 안내창이 열렸습니다. 내용을 직접 확인하세요.");
+        if (queueRunning && queueStage == "query") { ReportAutomationFailure("조회 중 안내창이 열렸습니다. 내용을 직접 확인하세요.", null, "page-notice"); StopBookingQueue("조회 중 안내창이 열렸습니다. 내용을 직접 확인하세요."); }
         // Always preserve a visible dialog for the user, including when the workflow is inactive.
         bool automatic = mouseBookingActive && !mouseSubmitted && mousePhase == "drawer" &&
             e.Kind == CoreWebView2ScriptDialogKind.Alert && e.Uri == view.CoreWebView2.Source && AllowedStopNotice(e.Message);
-        if (mouseBookingActive && !automatic) StopMouseBooking("안내문을 직접 확인해야 하므로 중지했습니다.");
+        if (mouseBookingActive && !automatic) { ReportAutomationFailure("안내문을 직접 확인해야 하므로 중지했습니다.", null, "page-notice"); StopMouseBooking("안내문을 직접 확인해야 하므로 중지했습니다."); }
         int run = mouseGeneration;
         var deferral = e.GetDeferral();
         if (BackgroundInputEnabled)
@@ -397,6 +405,8 @@ internal sealed partial class MainWindow
                 finally { deferral.Complete(); }
                 return;
             }
+            if (automatic && mouseNoticeCount > 3)
+                ReportAutomationFailure("정차 안내가 반복되어 중지했습니다.", null, "page-notice");
             StopBookingQueue("페이지 안내를 직접 확인해야 하므로 중지했습니다.");
             StopMouseBooking("페이지 안내를 직접 확인해야 하므로 중지했습니다.");
             DeferPageNotice(e, deferral);
@@ -409,7 +419,7 @@ internal sealed partial class MainWindow
     {
         try
         {
-            if (automatic && ++mouseNoticeCount > 3) { automatic = false; StopMouseBooking("정차 안내가 반복되어 중지했습니다."); }
+            if (automatic && ++mouseNoticeCount > 3) { automatic = false; ReportAutomationFailure("정차 안내가 반복되어 중지했습니다.", null, "page-notice"); StopMouseBooking("정차 안내가 반복되어 중지했습니다."); }
             using (var dialog = new Form { Text = automatic ? "코레일 정차 안내" : "페이지 안내 · 직접 확인", StartPosition = FormStartPosition.CenterParent, ClientSize = new Size(540, 240), FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false, Font = Font })
             {
                 var label = new Label { Text = e.Message, Dock = DockStyle.Fill, Padding = new Padding(24), TextAlign = ContentAlignment.MiddleLeft };
@@ -436,7 +446,7 @@ internal sealed partial class MainWindow
                     if (mouseBookingActive && run == mouseGeneration && NativeMouseInput.IsForeground(dialog) && NativeMouseInput.ForeignInputVersion() == mouseLastInput)
                     {
                         try { NativeMouseInput.PressEnter(dialog); }
-                        catch { StopMouseBooking("정차 안내를 자동으로 닫지 못했습니다. 직접 확인하세요."); }
+                        catch (Exception ex) { ReportAutomationFailure("정차 안내를 자동으로 닫지 못했습니다. 직접 확인하세요.", ex, "page-notice"); StopMouseBooking("정차 안내를 자동으로 닫지 못했습니다. 직접 확인하세요."); }
                     }
                     else if (mouseBookingActive) StopMouseBooking("안내창 입력 상태가 바뀌어 자동 진행을 중지했습니다.");
                 };

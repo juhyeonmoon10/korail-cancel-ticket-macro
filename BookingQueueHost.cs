@@ -82,6 +82,7 @@ internal sealed partial class MainWindow
         int startRun = mouseGeneration;
         await stopping;
         if (startRun != mouseGeneration || closing) return;
+        PrepareAutomationReports("예약 순서");
         try
         {
             if (!ready || closing || !AutomationAvailable()) return;
@@ -94,8 +95,9 @@ internal sealed partial class MainWindow
             if (jobs.Any(job => job.State == BookingQueueState.NeedsReview)) throw new InvalidOperationException("확인이 필요한 항목을 먼저 예약 관리에서 확인하세요.");
             queueOnlyJobId = null; queueRunning = true; queueGeneration++;
             BeginNextQueuedBooking();
+            AutomationReportsStarted();
         }
-        catch (Exception ex) { StopBookingQueue("예약 순서를 시작하지 못했습니다. " + ex.Message); status.Text = ex.Message; }
+        catch (Exception ex) { ReportAutomationFailure("예약 순서를 시작하지 못했습니다. " + ex.Message, ex); StopBookingQueue("예약 순서를 시작하지 못했습니다. " + ex.Message); StopAutomationReports(); status.Text = ex.Message; }
     }
 
     void BeginNextQueuedBooking()
@@ -105,7 +107,7 @@ internal sealed partial class MainWindow
         var pending = QueueStore().GetAll().FirstOrDefault(job => job.State == BookingQueueState.Pending && (queueOnlyJobId == null || job.Id == queueOnlyJobId));
         if (pending == null)
         {
-            StopBookingQueue(null);
+            StopBookingQueue(null, true);
             status.Text = "예약 완료 조건을 모두 충족했습니다 · 결제는 공식 화면에서 직접 하세요.";
             return;
         }
@@ -173,7 +175,7 @@ internal sealed partial class MainWindow
         ReleaseSleepPrevention();
     }
 
-    void StopBookingQueue(string reason)
+    void StopBookingQueue(string reason, bool completed = false)
     {
         if (!queueRunning && !queueInputWatching) return;
         bool stopNative = queueRunning && mouseBookingActive;
@@ -186,18 +188,19 @@ internal sealed partial class MainWindow
                 if (current != null && current.State == BookingQueueState.Running) QueueStore().MarkNeedsReview(current.Id);
             }
         }
-        catch { reason = "예약 순서의 중지 기록을 저장하지 못했습니다. 공식 예약 내역을 확인하세요."; }
+        catch (Exception ex) { reason = "예약 순서의 중지 기록을 저장하지 못했습니다. 공식 예약 내역을 확인하세요."; ReportAutomationFailure(reason, ex, "queue-store"); }
         try { ReleaseQueueInput(); }
-        catch { reason = "입력 감시를 정리하지 못했습니다. 프로그램을 다시 실행하세요."; }
+        catch (Exception ex) { reason = "입력 감시를 정리하지 못했습니다. 프로그램을 다시 실행하세요."; ReportAutomationFailure(reason, ex, "input-cleanup"); }
         queueJob = null; queueOnlyJobId = null; queueStage = null; queuePicker = null; queueSubmitted = false; queueProgress.Reset();
-        if (stopNative) StopMouseBooking(reason);
+        if (stopNative) StopMouseBooking(reason, completed);
+        StopAutomationReports(completed);
         if (!closing && reason != null) status.Text = reason + " · 예약 순서 중지";
         if (!closing) UpdateShellState();
     }
 
-    void QueueBookingStopped(string reason)
+    void QueueBookingStopped(string reason, bool completed = false)
     {
-        if (queueRunning && queueStage == "booking") StopBookingQueue(reason ?? "예약 완료를 확인하기 전에 중지했습니다.");
+        if (queueRunning && queueStage == "booking") StopBookingQueue(reason ?? "예약 완료를 확인하기 전에 중지했습니다.", completed);
     }
 
     void BindQueuedAttempt(BookingAttempt attempt)
@@ -224,7 +227,7 @@ internal sealed partial class MainWindow
     {
         if (generation < 0 || generation != queueGeneration || !queueRunning || closing || queueStage != "notifying") return;
         try { CheckQueueInput(); ReleaseQueueInput(); BeginNextQueuedBooking(); }
-        catch (Exception ex) { StopBookingQueue("다음 예약을 시작하지 못했습니다. " + ex.Message); }
+        catch (Exception ex) { ReportAutomationFailure("다음 예약을 시작하지 못했습니다. " + ex.Message, ex); StopBookingQueue("다음 예약을 시작하지 못했습니다. " + ex.Message); }
     }
 
     void WatchQueueNotification(int generation)
@@ -272,7 +275,7 @@ internal sealed partial class MainWindow
         if (queueStage == "notifying")
         {
             try { CheckQueueInput(); }
-            catch (Exception ex) { StopBookingQueue(ex.Message); }
+            catch (Exception ex) { ReportAutomationFailure(ex.Message, ex); StopBookingQueue(ex.Message); }
             return;
         }
         if (queueStage != "query") return;
@@ -379,7 +382,7 @@ internal sealed partial class MainWindow
             queueNextInput = DateTime.UtcNow.AddMilliseconds(900);
             status.Text = "다음 예약의 날짜·구간 입력 중 · F8 중지";
         }
-        catch (Exception ex) { if (QueueQueryCurrent(run) || queueRunning && run == queueGeneration) StopBookingQueue(ex.Message); }
+        catch (Exception ex) { if (QueueQueryCurrent(run) || queueRunning && run == queueGeneration) { ReportAutomationFailure(ex.Message, ex); StopBookingQueue(ex.Message); } }
         finally { queueBusy = false; }
     }
 }

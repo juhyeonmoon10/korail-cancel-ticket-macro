@@ -23,7 +23,7 @@ internal sealed partial class MainWindow
         var sidebar = new Panel { Dock = DockStyle.Fill, BackColor = UiTheme.Surface, Margin = Padding.Empty, Padding = new Padding(16, 20, 16, 16) };
         var brand = new Panel { Dock = DockStyle.Top, Height = 100 };
         brand.Controls.Add(new Label { Text = "한 장 도우미", Font = new Font(Font.FontFamily, 16, FontStyle.Bold), ForeColor = UiTheme.Text, AutoSize = true, Location = new Point(0, 4) });
-        brand.Controls.Add(new Label { Text = "KORAIL HELPER  /  0.11.2", Font = new Font(Font.FontFamily, 8), ForeColor = UiTheme.Muted, AutoSize = true, Location = new Point(2, 48) });
+        brand.Controls.Add(new Label { Text = "KORAIL HELPER  /  0.12.0", Font = new Font(Font.FontFamily, 8), ForeColor = UiTheme.Muted, AutoSize = true, Location = new Point(2, 48) });
         var nav = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, Padding = Padding.Empty };
         AddNavButton(nav, "코레일 열기", delegate { Navigate("https://www.korail.com/ticket/main"); });
         AddNavButton(nav, "예약 관리", async delegate { await OpenBookingQueue(); }).Enabled = !Program.ManualDiagnostic;
@@ -74,9 +74,10 @@ internal sealed partial class MainWindow
         view.Dock = DockStyle.Fill; view.DefaultBackgroundColor = Color.White;
         browser.Controls.Add(view); browser.Controls.Add(locationBar);
 
-        var feedback = new TableLayoutPanel { Dock = DockStyle.Bottom, Height = 174, ColumnCount = 1, RowCount = 4, BackColor = UiTheme.Surface, Padding = new Padding(14, 10, 14, 8), Margin = Padding.Empty };
+        var feedback = new TableLayoutPanel { Dock = DockStyle.Bottom, Height = 184, ColumnCount = 1, RowCount = 5, BackColor = UiTheme.Surface, Padding = new Padding(14, 10, 14, 8), Margin = Padding.Empty };
         feedback.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        feedback.RowStyles.Add(new RowStyle(SizeType.Absolute, 28)); feedback.RowStyles.Add(new RowStyle(SizeType.Absolute, 46)); feedback.RowStyles.Add(new RowStyle(SizeType.Absolute, 28)); feedback.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        feedback.RowStyles.Add(new RowStyle(SizeType.Absolute, 24)); feedback.RowStyles.Add(new RowStyle(SizeType.Absolute, 36)); feedback.RowStyles.Add(new RowStyle(SizeType.Absolute, 28)); feedback.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        feedback.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
         var stateHeading = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, Margin = Padding.Empty };
         stateHeading.Controls.Add(new Label { Text = "실행 상태", AutoSize = true, Font = new Font(Font, FontStyle.Bold), Margin = new Padding(0, 3, 0, 0) });
         stateHeading.Controls.Add(shellState);
@@ -90,7 +91,7 @@ internal sealed partial class MainWindow
         notificationStatus.ForeColor = sleepStatus.ForeColor = UiTheme.Muted;
         notificationStatus.Margin = new Padding(0, 2, 12, 0); sleepStatus.Margin = new Padding(6, 2, 0, 0);
         notificationStatus.AutoEllipsis = sleepStatus.AutoEllipsis = true;
-        notificationStatus.Text = settings.Telegram.Enabled ? "텔레그램 알림 켜짐 · 예약 완료 확인 후 전송" : "텔레그램 알림 꺼짐 · ‘설정 → 내 텔레그램 연결’에서 연결하세요.";
+        notificationStatus.Text = settings.Telegram.Enabled ? "텔레그램 알림 켜짐 · 예약 완료 및 설정한 실행 보고" : "텔레그램 알림 꺼짐 · ‘설정 → 내 텔레그램 연결’에서 연결하세요.";
         if (settings.LoadWarning != null) notificationStatus.Text = settings.LoadWarning;
         if (Program.ManualDiagnostic) notificationStatus.Text = "수동 진단 모드 · 자동 예약·알림 없음 · 기존 브라우저 세션 유지";
         ShowSleepStatus(false);
@@ -99,7 +100,11 @@ internal sealed partial class MainWindow
         refreshProgress.ForeColor = UiTheme.Accent; refreshProgress.Font = new Font(Font.FontFamily, 9);
         refreshProgress.Margin = new Padding(0, 0, 0, 4); UpdateRefreshProgress();
         feedback.Controls.Add(stateHeading, 0, 0); feedback.Controls.Add(status, 0, 1); feedback.Controls.Add(refreshProgress, 0, 2); feedback.Controls.Add(details, 0, 3);
-        foreach (var label in new [] { status, notificationStatus, sleepStatus })
+        automationReportStatus.Dock = DockStyle.Fill; automationReportStatus.AutoEllipsis = true;
+        automationReportStatus.Font = new Font(Font.FontFamily, 9); automationReportStatus.ForeColor = UiTheme.Muted;
+        automationReportStatus.Text = "실행 보고 · 시작·오류·중간 보고는 내 텔레그램 연결에서 설정하세요.";
+        feedback.Controls.Add(automationReportStatus, 0, 4);
+        foreach (var label in new [] { status, notificationStatus, sleepStatus, automationReportStatus })
         {
             var observed = label;
             shellTips.SetToolTip(observed, observed.Text);

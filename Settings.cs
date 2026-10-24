@@ -79,21 +79,40 @@ internal sealed class JourneySettings
 
 internal sealed class TelegramSettings
 {
+    public const int DefaultProgressEveryQueries = 50;
+    public const int MaximumProgressEveryQueries = 1000000;
     public bool Enabled { get; set; }
     public string BotToken { get; set; }
     public string ChatId { get; set; }
-    public TelegramSettings() { BotToken = ""; ChatId = ""; }
+    public bool StartNotificationsEnabled { get; set; }
+    public bool ErrorNotificationsEnabled { get; set; }
+    public bool ProgressNotificationsEnabled { get; set; }
+    public int ProgressEveryQueries { get; set; }
+    public TelegramSettings()
+    {
+        BotToken = ""; ChatId = "";
+        StartNotificationsEnabled = true; ErrorNotificationsEnabled = true; ProgressNotificationsEnabled = true;
+        ProgressEveryQueries = DefaultProgressEveryQueries;
+    }
     public TelegramSettings Copy() { return (TelegramSettings)MemberwiseClone(); }
     // Onboarding checks stored credentials independently of the notification toggle.
     // Turning notifications off must not make a configured user enter them again.
     [ScriptIgnore]
     public bool HasCredentials
     {
-        get { var required = Copy(); required.Enabled = true; return required.Validate() == null; }
+        get { return ValidateCredentials() == null; }
     }
     public string Validate()
     {
         if (!Enabled) return null;
+        string issue = ValidateCredentials();
+        if (issue != null) return issue;
+        if (ProgressNotificationsEnabled && (ProgressEveryQueries < 1 || ProgressEveryQueries > MaximumProgressEveryQueries))
+            return "중간 보고 간격은 1~1,000,000회로 지정하세요.";
+        return null;
+    }
+    string ValidateCredentials()
+    {
         if (String.IsNullOrWhiteSpace(BotToken) || !Regex.IsMatch(BotToken.Trim(), @"^[0-9]{5,20}:[A-Za-z0-9_-]{20,200}$")) return "텔레그램 BotFather에서 발급받은 봇 토큰을 확인하세요.";
         long chat;
         if (String.IsNullOrWhiteSpace(ChatId) || !Regex.IsMatch(ChatId.Trim(), @"^-?[0-9]{1,20}$") || !Int64.TryParse(ChatId.Trim(), NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out chat) || chat == 0) return "Chat ID는 0이 아닌 숫자로 입력하세요. 그룹 ID의 음수 기호도 포함하세요.";
@@ -122,6 +141,10 @@ internal sealed class AppSettings
         public bool Enabled { get; set; }
         public string ChatId { get; set; }
         public string BotTokenProtected { get; set; }
+        public bool? StartNotificationsEnabled { get; set; }
+        public bool? ErrorNotificationsEnabled { get; set; }
+        public bool? ProgressNotificationsEnabled { get; set; }
+        public int? ProgressEveryQueries { get; set; }
     }
     public static AppSettings Load(string path)
     {
@@ -130,7 +153,21 @@ internal sealed class AppSettings
         try
         {
             if (new FileInfo(path).Length > 65536) throw new InvalidDataException();
-            var saved = new JavaScriptSerializer().Deserialize<StoredSettings>(File.ReadAllText(path, Encoding.UTF8));
+            var serializer = new JavaScriptSerializer();
+            var document = serializer.Deserialize<Dictionary<string, object>>(File.ReadAllText(path, Encoding.UTF8));
+            object telegramValue;
+            var reports = new Dictionary<string, object>();
+            var rawTelegram = document != null && document.TryGetValue("Telegram", out telegramValue) ? telegramValue as Dictionary<string, object> : null;
+            // Read optional reports independently: a corrupt new preference must not discard encrypted credentials.
+            if (rawTelegram != null)
+            {
+                foreach (string key in new [] { "StartNotificationsEnabled", "ErrorNotificationsEnabled", "ProgressNotificationsEnabled", "ProgressEveryQueries" })
+                {
+                    object value;
+                    if (rawTelegram.TryGetValue(key, out value)) { reports[key] = value; rawTelegram.Remove(key); }
+                }
+            }
+            var saved = serializer.Deserialize<StoredSettings>(serializer.Serialize(document));
             if (saved == null || saved.Version != 1) throw new InvalidDataException();
             if (saved.Journey != null && saved.Journey.Validate() == null) result.Journey = saved.Journey;
             else result.LoadWarning = "저장된 열차 조건을 읽지 못했습니다. 설정에서 다시 지정하세요.";
@@ -145,6 +182,19 @@ internal sealed class AppSettings
                     finally { Array.Clear(plain, 0, plain.Length); }
                 }
                 if (result.Telegram.Validate() != null) throw new InvalidDataException();
+                bool damaged = false;
+                result.Telegram.StartNotificationsEnabled = ReadReportFlag(reports, "StartNotificationsEnabled", ref damaged);
+                result.Telegram.ErrorNotificationsEnabled = ReadReportFlag(reports, "ErrorNotificationsEnabled", ref damaged);
+                result.Telegram.ProgressNotificationsEnabled = ReadReportFlag(reports, "ProgressNotificationsEnabled", ref damaged);
+                object interval;
+                if (reports.TryGetValue("ProgressEveryQueries", out interval) && interval != null)
+                {
+                    if (interval is int && (int)interval >= 1 && (int)interval <= TelegramSettings.MaximumProgressEveryQueries)
+                        result.Telegram.ProgressEveryQueries = (int)interval;
+                    else { result.Telegram.ProgressNotificationsEnabled = false; damaged = true; }
+                }
+                if (damaged)
+                    result.LoadWarning = (result.LoadWarning == null ? "" : result.LoadWarning + "\n") + "일부 텔레그램 보고 설정을 읽지 못해 해당 보고만 껐습니다. 연결 정보는 유지됩니다. 설정에서 보고 간격과 항목을 확인하세요.";
             }
         }
         catch
@@ -154,11 +204,23 @@ internal sealed class AppSettings
         }
         return result;
     }
+    static bool ReadReportFlag(Dictionary<string, object> values, string key, ref bool damaged)
+    {
+        object value;
+        if (!values.TryGetValue(key, out value) || value == null) return true;
+        if (value is bool) return (bool)value;
+        damaged = true; return false;
+    }
     public void Save(string path)
     {
         string issue = Journey.Validate() ?? Telegram.Validate();
         if (issue != null) throw new ArgumentException(issue);
-        var stored = new StoredSettings { Version = 1, Journey = Journey.Copy(), Telegram = new StoredTelegram { Enabled = Telegram.Enabled, ChatId = (Telegram.ChatId ?? "").Trim(), BotTokenProtected = "" } };
+        var stored = new StoredSettings { Version = 1, Journey = Journey.Copy(), Telegram = new StoredTelegram {
+            Enabled = Telegram.Enabled, ChatId = (Telegram.ChatId ?? "").Trim(), BotTokenProtected = "",
+            StartNotificationsEnabled = Telegram.StartNotificationsEnabled, ErrorNotificationsEnabled = Telegram.ErrorNotificationsEnabled,
+            ProgressNotificationsEnabled = Telegram.ProgressNotificationsEnabled,
+            ProgressEveryQueries = Telegram.ProgressEveryQueries >= 1 && Telegram.ProgressEveryQueries <= TelegramSettings.MaximumProgressEveryQueries ? Telegram.ProgressEveryQueries : TelegramSettings.DefaultProgressEveryQueries
+        } };
         if (!String.IsNullOrWhiteSpace(Telegram.BotToken))
         {
             byte[] plain = Encoding.UTF8.GetBytes(Telegram.BotToken.Trim());
@@ -329,7 +391,11 @@ internal sealed class SettingsDialog : Form
     readonly DateTimePicker to = new DateTimePicker { Format = DateTimePickerFormat.Custom, CustomFormat = "HH:mm", ShowUpDown = true };
     readonly TextBox train = new TextBox { MaxLength = 400, AccessibleName = "열차번호 목록 (쉼표 구분)" };
     readonly ComboBox grade = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
-    readonly CheckBox telegramEnabled = new CheckBox { Text = "예약 완료가 확인되면 텔레그램 알림 보내기", AutoSize = true };
+    readonly CheckBox telegramEnabled = new CheckBox { Text = "텔레그램 알림 사용 (예약 완료 · 실행 보고)", AutoSize = true };
+    readonly CheckBox startNotifications = new CheckBox { Text = "자동 예매 시작 시 보고", AutoSize = true };
+    readonly CheckBox errorNotifications = new CheckBox { Text = "오류로 중단되면 원인과 필요한 조치 보고", AutoSize = true };
+    readonly CheckBox progressNotifications = new CheckBox { Text = "중간 진행 보고", AutoSize = true };
+    readonly NumericUpDown progressEveryQueries = new NumericUpDown { Minimum = 1, Maximum = TelegramSettings.MaximumProgressEveryQueries, Value = TelegramSettings.DefaultProgressEveryQueries, ThousandsSeparator = true, Width = 105, AccessibleName = "중간 진행 보고 간격 (조회 횟수)" };
     readonly TextBox token = new TextBox { UseSystemPasswordChar = true, MaxLength = 230, AccessibleName = "내 봇 토큰" };
     readonly TextBox chatId = new TextBox { MaxLength = 21, AccessibleName = "내 Chat ID" };
     readonly Label notice = new Label { AutoSize = false, Dock = DockStyle.Fill, ForeColor = UiTheme.Muted, AccessibleName = "설정 안내" };
@@ -352,7 +418,7 @@ internal sealed class SettingsDialog : Form
         ClientSize = new Size(760, 780); MinimumSize = new Size(720, 640);
         StartPosition = FormStartPosition.CenterParent; ShowInTaskbar = false;
         MaximizeBox = false; MinimizeBox = false;
-        foreach (Control input in new Control[] { departure, arrival, date, from, to, train, grade, token, chatId }) UiTheme.StyleInput(input);
+        foreach (Control input in new Control[] { departure, arrival, date, from, to, train, grade, token, chatId, progressEveryQueries }) UiTheme.StyleInput(input);
         UiTheme.StyleButton(test); UiTheme.StyleButton(findChat); UiTheme.StyleButton(disconnect, "quiet"); UiTheme.StyleButton(save, "primary");
         var root = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(24), ColumnCount = 1, RowCount = 4 };
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -361,8 +427,8 @@ internal sealed class SettingsDialog : Form
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 76));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 54));
         var heading = new Panel { Dock = DockStyle.Fill };
-        heading.Controls.Add(new Label { Text = firstRun ? "예약 알림부터 연결하세요" : "나에게 맞게 설정하세요", Dock = DockStyle.Top, Height = 38, Font = new Font(Font.FontFamily, 18, FontStyle.Bold), ForeColor = UiTheme.Text });
-        heading.Controls.Add(new Label { Text = firstRun ? "본인의 텔레그램 봇으로 예약 결과를 받아보세요." : "원하는 열차 조건과 예약 알림을 한 곳에서 관리합니다.", Dock = DockStyle.Bottom, Height = 32, ForeColor = UiTheme.Muted });
+        heading.Controls.Add(new Label { Text = firstRun ? "텔레그램 알림부터 연결하세요" : "나에게 맞게 설정하세요", Dock = DockStyle.Top, Height = 38, Font = new Font(Font.FontFamily, 18, FontStyle.Bold), ForeColor = UiTheme.Text });
+        heading.Controls.Add(new Label { Text = firstRun ? "본인의 텔레그램 봇으로 예약 결과와 진행 상황을 받아보세요." : "원하는 열차 조건과 텔레그램 알림을 한 곳에서 관리합니다.", Dock = DockStyle.Bottom, Height = 32, ForeColor = UiTheme.Muted });
         var journeyPage = new TabPage("열차 선택") { BackColor = UiTheme.Surface, AutoScroll = true };
         var telegramPage = new TabPage("텔레그램 연결") { BackColor = UiTheme.Surface, AutoScroll = true };
         tabs.TabPages.Add(journeyPage); tabs.TabPages.Add(telegramPage);
@@ -380,8 +446,8 @@ internal sealed class SettingsDialog : Form
         Span(journeyLayout, Hint("열차번호 예: 505,541,561 · 쉼표로 최대 20개, 빈칸도 가능\n입력한 순서대로 확인하며, 선택한 열차 중 한 편만 예약합니다."), 9);
         journeyPage.Controls.Add(journeyLayout);
 
-        var telegramLayout = FieldLayout(9);
-        Span(telegramLayout, SectionHeading("예약 결과를 텔레그램으로"), 0);
+        var telegramLayout = FieldLayout(12);
+        Span(telegramLayout, SectionHeading("예약 결과와 진행 상황을 텔레그램으로"), 0);
         Span(telegramLayout, Hint("1. BotFather에서 /newbot으로 본인의 봇을 만드세요.\n2. 만든 봇과 대화를 열고 /start를 보내세요.\n3. 토큰 입력 → Chat ID 찾기 → 테스트 → 알림 체크 후 저장"), 1);
         var botFather = new LinkLabel { Text = "BotFather에서 봇 만들기 ↗", AutoSize = true, LinkBehavior = LinkBehavior.HoverUnderline, LinkColor = UiTheme.Accent, ActiveLinkColor = UiTheme.Accent, VisitedLinkColor = UiTheme.Accent };
         botFather.LinkClicked += delegate {
@@ -393,8 +459,14 @@ internal sealed class SettingsDialog : Form
         var telegramActions = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = true, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
         telegramActions.Controls.Add(findChat); telegramActions.Controls.Add(test);
         Span(telegramLayout, telegramActions, 5); Span(telegramLayout, telegramEnabled, 6);
-        Span(telegramLayout, Hint("테스트 후에도 ‘설정 저장’을 눌러야 알림 사용이 적용됩니다.\n개인 대화만 찾을 수 있으며, 그룹 ID는 직접 입력하세요.\n토큰은 이 PC의 Windows 계정으로 암호화해 저장합니다.\n예약 완료 확인 알림이며 결제는 직접 진행하세요."), 7);
-        Span(telegramLayout, disconnect, 8);
+        Span(telegramLayout, startNotifications, 7); Span(telegramLayout, errorNotifications, 8);
+        var progressOptions = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = true, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
+        progressNotifications.Margin = new Padding(0, 5, 14, 0); progressEveryQueries.Margin = new Padding(0, 0, 8, 0);
+        progressOptions.Controls.Add(progressNotifications); progressOptions.Controls.Add(progressEveryQueries);
+        progressOptions.Controls.Add(new Label { Text = "회 조회할 때마다", AutoSize = true, Margin = new Padding(0, 5, 0, 0) });
+        Span(telegramLayout, progressOptions, 9);
+        Span(telegramLayout, Hint("예: 50회로 설정하면 50·100·150회 조회마다 상황을 보고합니다.\n테스트 후에도 ‘설정 저장’을 눌러야 알림 사용이 적용됩니다.\n개인 대화만 찾을 수 있으며, 그룹 ID는 직접 입력하세요.\n토큰은 이 PC의 Windows 계정으로 암호화해 저장합니다.\n진행 보고는 예약 확정이 아닙니다. 결제는 직접 진행하세요."), 10);
+        Span(telegramLayout, disconnect, 11);
         telegramPage.Controls.Add(telegramLayout);
         var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, Padding = new Padding(0, 6, 0, 0) };
         var cancel = new Button { Text = firstRun ? "나중에" : "취소", Width = 104, Height = 42, DialogResult = DialogResult.Cancel };
@@ -409,6 +481,13 @@ internal sealed class SettingsDialog : Form
         train.Text = initial.Journey.TrainNumber; grade.SelectedItem = initial.Journey.Grade;
         if (grade.SelectedIndex < 0) grade.SelectedIndex = 0;
         telegramEnabled.Checked = firstRun || initial.Telegram.Enabled; token.Text = initial.Telegram.BotToken; chatId.Text = initial.Telegram.ChatId;
+        startNotifications.Checked = initial.Telegram.StartNotificationsEnabled; errorNotifications.Checked = initial.Telegram.ErrorNotificationsEnabled;
+        progressNotifications.Checked = initial.Telegram.ProgressNotificationsEnabled;
+        progressEveryQueries.Value = initial.Telegram.ProgressEveryQueries >= 1 && initial.Telegram.ProgressEveryQueries <= TelegramSettings.MaximumProgressEveryQueries
+            ? initial.Telegram.ProgressEveryQueries : TelegramSettings.DefaultProgressEveryQueries;
+        telegramEnabled.CheckedChanged += delegate { UpdateReportControlState(); };
+        progressNotifications.CheckedChanged += delegate { UpdateReportControlState(); };
+        UpdateReportControlState();
         notice.Text = firstRun
             ? "먼저 본인의 봇 토큰과 Chat ID를 입력하고 저장하세요. ‘나중에’를 누르면 연결 없이 시작하며, 다음 실행 때 다시 안내합니다."
             : "변경한 두 탭의 설정은 ‘저장’을 눌러야 적용됩니다. 취소하면 기존 설정을 유지합니다.";
@@ -429,7 +508,7 @@ internal sealed class SettingsDialog : Form
             string issue = selected.Validate();
             if (issue != null) { SetNotice(issue, true); return; }
             SetWorking(true); SetNotice("테스트 알림을 보내는 중입니다…", false);
-            string outcome = await TelegramNotifier.SendAsync(selected, "[코레일 한 장 도우미] 텔레그램 연결 테스트입니다. 예약 완료가 확인되면 이 대화로 알립니다. 결제는 직접 진행하세요.");
+            string outcome = await TelegramNotifier.SendAsync(selected, "[코레일 한 장 도우미] 텔레그램 연결 테스트입니다. 예약 완료와 선택한 실행 보고를 이 대화로 알립니다. 결제는 직접 진행하세요.");
             if (IsDisposed) return;
             SetWorking(false);
             notice.ForeColor = outcome == TelegramNotifier.SuccessMessage ? Color.FromArgb(20, 113, 71) : UiTheme.Danger;
@@ -467,6 +546,12 @@ internal sealed class SettingsDialog : Form
         // Freeze both tabs so a completed request always refers to the credentials still shown.
         tabs.Enabled = !value; save.Enabled = !value;
     }
+    void UpdateReportControlState()
+    {
+        startNotifications.Enabled = telegramEnabled.Checked; errorNotifications.Enabled = telegramEnabled.Checked;
+        progressNotifications.Enabled = telegramEnabled.Checked;
+        progressEveryQueries.Enabled = telegramEnabled.Checked && progressNotifications.Checked;
+    }
     void SetNotice(string message, bool error)
     {
         notice.ForeColor = error ? UiTheme.Danger : UiTheme.Muted; notice.Text = message;
@@ -499,7 +584,11 @@ internal sealed class SettingsDialog : Form
     {
         return new AppSettings {
             Journey = new JourneySettings { Enabled = journeyEnabled.Checked, DepartureStation = departure.Text.Trim(), ArrivalStation = arrival.Text.Trim(), Date = date.Value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), FromTime = from.Value.ToString("HH:mm", CultureInfo.InvariantCulture), ToTime = to.Value.ToString("HH:mm", CultureInfo.InvariantCulture), TrainNumber = train.Text.Trim(), Grade = (string)grade.SelectedItem },
-            Telegram = new TelegramSettings { Enabled = telegramEnabled.Checked, BotToken = token.Text.Trim(), ChatId = chatId.Text.Trim() }
+            Telegram = new TelegramSettings {
+                Enabled = telegramEnabled.Checked, BotToken = token.Text.Trim(), ChatId = chatId.Text.Trim(),
+                StartNotificationsEnabled = startNotifications.Checked, ErrorNotificationsEnabled = errorNotifications.Checked,
+                ProgressNotificationsEnabled = progressNotifications.Checked, ProgressEveryQueries = (int)progressEveryQueries.Value
+            }
         };
     }
     static DateTime Parse(string value, string format, DateTime fallback)

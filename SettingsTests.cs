@@ -3,13 +3,17 @@ using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using System.Net.Http;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Web.Script.Serialization;
+using System.Windows.Forms;
 
 internal static class SettingsTests
 {
     const string FakeToken = "123456789:THIS_IS_A_SYNTHETIC_TEST_TOKEN_12345";
     static int count;
+    [STAThread]
     static int Main(string[] args)
     {
         try { Run(args.Length == 0 ? Path.Combine(Path.GetTempPath(), "korail-settings-tests") : args[0]).GetAwaiter().GetResult(); Console.WriteLine("PASS " + count + " settings and Telegram checks (mock HTTP only)"); return 0; }
@@ -22,8 +26,86 @@ internal static class SettingsTests
         catch (FormatException ex) { return !String.IsNullOrWhiteSpace(ex.Message); }
     }
     static TelegramSettings Valid() { return new TelegramSettings { Enabled = true, BotToken = FakeToken, ChatId = "-1001234567890" }; }
+    static T Field<T>(SettingsDialog dialog, string name) where T : class
+    {
+        return (T)typeof(SettingsDialog).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic).GetValue(dialog);
+    }
+    static AppSettings ReadDialog(SettingsDialog dialog)
+    {
+        return (AppSettings)typeof(SettingsDialog).GetMethod("ReadFields", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(dialog, null);
+    }
+    static void CheckReportDialog()
+    {
+        var source = new AppSettings { Telegram = Valid() };
+        source.Telegram.StartNotificationsEnabled = false; source.Telegram.ErrorNotificationsEnabled = true;
+        source.Telegram.ProgressNotificationsEnabled = false; source.Telegram.ProgressEveryQueries = 137;
+        using (var dialog = new SettingsDialog(source, true))
+        {
+            var read = ReadDialog(dialog).Telegram;
+            Check(read.Enabled && !read.StartNotificationsEnabled && read.ErrorNotificationsEnabled && !read.ProgressNotificationsEnabled && read.ProgressEveryQueries == 137,
+                "report dialog loads and reads each saved preference independently");
+            var master = Field<CheckBox>(dialog, "telegramEnabled");
+            var start = Field<CheckBox>(dialog, "startNotifications");
+            var errors = Field<CheckBox>(dialog, "errorNotifications");
+            var progress = Field<CheckBox>(dialog, "progressNotifications");
+            var every = Field<NumericUpDown>(dialog, "progressEveryQueries");
+            Check(every.Minimum == 1 && every.Maximum == 1000000 && every.DecimalPlaces == 0 && !every.Enabled,
+                "report interval control accepts only bounded whole counts and follows periodic toggle");
+            progress.Checked = true; every.Value = 50; start.Checked = true;
+            read = ReadDialog(dialog).Telegram;
+            Check(every.Enabled && read.ProgressNotificationsEnabled && read.StartNotificationsEnabled && read.ProgressEveryQueries == 50,
+                "editing report choices and interval is reflected in saved dialog result");
+            master.Checked = false;
+            read = ReadDialog(dialog).Telegram;
+            Check(!start.Enabled && !errors.Enabled && !progress.Enabled && !every.Enabled && !read.Enabled && read.StartNotificationsEnabled && read.ProgressNotificationsEnabled && read.ProgressEveryQueries == 50,
+                "master notification toggle disables controls without losing report choices");
+            Check(read.HasCredentials && read.BotToken == FakeToken && read.ChatId == source.Telegram.ChatId,
+                "turning off report controls keeps encrypted-credential input intact");
+            master.Checked = true;
+            Check(start.Enabled && errors.Enabled && progress.Enabled && every.Enabled, "master notification toggle restores report controls");
+            Check(!source.Telegram.StartNotificationsEnabled && !source.Telegram.ProgressNotificationsEnabled && source.Telegram.ProgressEveryQueries == 137,
+                "dialog edits do not mutate initial settings before save");
+        }
+        source.Telegram.ProgressEveryQueries = -1;
+        using (var dialog = new SettingsDialog(source, true))
+            Check(ReadDialog(dialog).Telegram.ProgressEveryQueries == 50 && ReadDialog(dialog).Telegram.BotToken == FakeToken,
+                "dialog normalizes malformed interval without discarding credentials");
+    }
+    static string WithReportFields(string json, IDictionary<string, object> fields)
+    {
+        var serializer = new JavaScriptSerializer();
+        var document = serializer.Deserialize<Dictionary<string, object>>(json);
+        var telegram = (Dictionary<string, object>)document["Telegram"];
+        foreach (string key in new [] { "StartNotificationsEnabled", "ErrorNotificationsEnabled", "ProgressNotificationsEnabled", "ProgressEveryQueries" }) telegram.Remove(key);
+        if (fields != null) foreach (var field in fields) telegram[field.Key] = field.Value;
+        return serializer.Serialize(document);
+    }
     static async Task Run(string directory)
     {
+        CheckReportDialog();
+        // These controls are inspected without a message loop; HTTP mocks below run as console tasks.
+        SynchronizationContext.SetSynchronizationContext(null);
+        var defaults = new TelegramSettings();
+        Check(!defaults.Enabled && defaults.StartNotificationsEnabled && defaults.ErrorNotificationsEnabled && defaults.ProgressNotificationsEnabled && defaults.ProgressEveryQueries == 50,
+            "new report preferences default on at fifty queries while master remains off");
+        var copied = Valid(); copied.StartNotificationsEnabled = false; copied.ErrorNotificationsEnabled = false; copied.ProgressNotificationsEnabled = false; copied.ProgressEveryQueries = 137;
+        var copy = copied.Copy();
+        Check(!copy.StartNotificationsEnabled && !copy.ErrorNotificationsEnabled && !copy.ProgressNotificationsEnabled && copy.ProgressEveryQueries == 137 && copy.BotToken == FakeToken,
+            "Telegram copy preserves all report preferences and credentials");
+        copy.ProgressEveryQueries = 50; copy.StartNotificationsEnabled = true;
+        Check(copied.ProgressEveryQueries == 137 && !copied.StartNotificationsEnabled, "Telegram copied report settings remain independent");
+        foreach (int invalidInterval in new [] { -1, 0, 1000001, Int32.MaxValue })
+        {
+            var invalidReports = Valid(); invalidReports.ProgressEveryQueries = invalidInterval;
+            Check(invalidReports.Validate() != null && invalidReports.HasCredentials, "invalid enabled report interval rejected without invalidating credentials");
+            invalidReports.ProgressNotificationsEnabled = false;
+            Check(invalidReports.Validate() == null, "disabled progress reports ignore inactive interval validation");
+        }
+        foreach (int interval in new [] { 1, 50, 1000000 })
+        {
+            var bounded = Valid(); bounded.ProgressEveryQueries = interval;
+            Check(bounded.Validate() == null, "valid report interval accepted: " + interval);
+        }
         Check(!new TelegramSettings().HasCredentials, "first run with no credentials requires Telegram setup");
         var setup = Valid();
         Check(setup.HasCredentials, "valid stored credentials skip first-run setup");
@@ -66,6 +148,42 @@ internal static class SettingsTests
         var loaded = AppSettings.Load(file);
         Check(loaded.Telegram.BotToken == FakeToken && loaded.Telegram.Enabled && loaded.Journey.TrainNumber == "101", "DPAPI and journey roundtrip");
         Check(loaded.Telegram.HasCredentials, "saved connection skips setup after restart");
+        string reportFile = Path.Combine(directory, "settings-reports.json");
+        var reports = settings.Copy(); reports.Telegram.StartNotificationsEnabled = false; reports.Telegram.ErrorNotificationsEnabled = false;
+        reports.Telegram.ProgressNotificationsEnabled = true; reports.Telegram.ProgressEveryQueries = 137;
+        reports.Save(reportFile); var reportLoaded = AppSettings.Load(reportFile);
+        Check(!reportLoaded.Telegram.StartNotificationsEnabled && !reportLoaded.Telegram.ErrorNotificationsEnabled && reportLoaded.Telegram.ProgressNotificationsEnabled && reportLoaded.Telegram.ProgressEveryQueries == 137 && reportLoaded.LoadWarning == null,
+            "report choices and nondefault interval roundtrip beside existing settings");
+        Check(reportLoaded.Telegram.BotToken == FakeToken && !File.ReadAllText(reportFile).Contains(FakeToken), "report persistence preserves DPAPI token protection");
+        File.WriteAllText(reportFile, WithReportFields(stored, null)); reportLoaded = AppSettings.Load(reportFile);
+        Check(reportLoaded.Telegram.Enabled && reportLoaded.Telegram.StartNotificationsEnabled && reportLoaded.Telegram.ErrorNotificationsEnabled && reportLoaded.Telegram.ProgressNotificationsEnabled && reportLoaded.Telegram.ProgressEveryQueries == 50 && reportLoaded.LoadWarning == null && reportLoaded.Telegram.BotToken == FakeToken,
+            "legacy version-one profile defaults new report preferences without losing credentials");
+        File.WriteAllText(reportFile, WithReportFields(stored, new Dictionary<string, object> { { "StartNotificationsEnabled", null }, { "ErrorNotificationsEnabled", null }, { "ProgressNotificationsEnabled", null }, { "ProgressEveryQueries", null } }));
+        reportLoaded = AppSettings.Load(reportFile);
+        Check(reportLoaded.Telegram.StartNotificationsEnabled && reportLoaded.Telegram.ErrorNotificationsEnabled && reportLoaded.Telegram.ProgressNotificationsEnabled && reportLoaded.Telegram.ProgressEveryQueries == 50 && reportLoaded.LoadWarning == null,
+            "nullable report fields retain backward-compatible defaults");
+        File.WriteAllText(reportFile, WithReportFields(stored, new Dictionary<string, object> { { "StartNotificationsEnabled", "invalid" }, { "ErrorNotificationsEnabled", new object[0] }, { "ProgressNotificationsEnabled", new Dictionary<string, object>() }, { "ProgressEveryQueries", "50" } }));
+        reportLoaded = AppSettings.Load(reportFile);
+        Check(reportLoaded.Telegram.Enabled && reportLoaded.Telegram.BotToken == FakeToken && reportLoaded.Telegram.HasCredentials && !reportLoaded.Telegram.StartNotificationsEnabled && !reportLoaded.Telegram.ErrorNotificationsEnabled && !reportLoaded.Telegram.ProgressNotificationsEnabled && reportLoaded.Telegram.ProgressEveryQueries == 50 && reportLoaded.LoadWarning != null,
+            "malformed optional report types disable only affected reports and preserve credentials");
+        foreach (object interval in new object[] { 0, -1, 1000001, 50.5m, "wrong", true, 2147483648L })
+        {
+            File.WriteAllText(reportFile, WithReportFields(stored, new Dictionary<string, object> { { "ProgressEveryQueries", interval } }));
+            reportLoaded = AppSettings.Load(reportFile);
+            Check(reportLoaded.Telegram.Enabled && reportLoaded.Telegram.StartNotificationsEnabled && reportLoaded.Telegram.ErrorNotificationsEnabled && !reportLoaded.Telegram.ProgressNotificationsEnabled && reportLoaded.Telegram.ProgressEveryQueries == 50 && reportLoaded.Telegram.BotToken == FakeToken && reportLoaded.LoadWarning != null,
+                "corrupt interval disables periodic reporting only");
+        }
+        reports.Telegram.ProgressEveryQueries = 0;
+        bool refused = false;
+        try { reports.Save(reportFile); } catch (ArgumentException) { refused = true; }
+        Check(refused, "save rejects invalid active report interval");
+        reports.Telegram.ProgressNotificationsEnabled = false; reports.Save(reportFile); reportLoaded = AppSettings.Load(reportFile);
+        Check(!reportLoaded.Telegram.ProgressNotificationsEnabled && reportLoaded.Telegram.ProgressEveryQueries == 50 && reportLoaded.Telegram.BotToken == FakeToken && reportLoaded.LoadWarning == null,
+            "saving disabled periodic reporting normalizes inactive interval");
+        reports.Telegram.Enabled = false; reports.Telegram.ProgressNotificationsEnabled = true; reports.Telegram.ProgressEveryQueries = 137;
+        reports.Save(reportFile); reportLoaded = AppSettings.Load(reportFile);
+        Check(!reportLoaded.Telegram.Enabled && !reportLoaded.Telegram.StartNotificationsEnabled && !reportLoaded.Telegram.ErrorNotificationsEnabled && reportLoaded.Telegram.ProgressNotificationsEnabled && reportLoaded.Telegram.ProgressEveryQueries == 137 && reportLoaded.Telegram.HasCredentials,
+            "disabled master preserves chosen reports and credentials after restart");
         var multiTrainSettings = settings.Copy(); multiTrainSettings.Journey.TrainNumber = "00505, 541,505, 00561";
         Check(multiTrainSettings.Journey.Validate() == null, "CSV train selection validates without changing persisted string format");
         string multiTrainFile = Path.Combine(directory, "settings-multiple-trains.json"); multiTrainSettings.Save(multiTrainFile);

@@ -18,8 +18,8 @@ using Microsoft.Win32;
 
 [assembly: AssemblyTitle("코레일 한 장 도우미 PC")]
 [assembly: AssemblyDescription("개인용 열차 예매 보조 도구 - 비공식")]
-[assembly: AssemblyVersion("0.11.2.0")]
-[assembly: AssemblyFileVersion("0.11.2.0")]
+[assembly: AssemblyVersion("0.12.0.0")]
+[assembly: AssemblyFileVersion("0.12.0.0")]
 
 internal static class Program
 {
@@ -46,7 +46,7 @@ internal static class Program
             if (!created) { MessageBox.Show("이미 실행 중입니다. 열린 코레일 도우미 창을 사용하세요.", "코레일 한 장 도우미"); return 2; }
             try
             {
-                BundleRoot = Path.Combine(DataRoot, "app-0.11.2");
+                BundleRoot = Path.Combine(DataRoot, "app-0.12.0");
                 Extract();
                 AppDomain.CurrentDomain.AssemblyResolve += delegate(object sender, ResolveEventArgs eventArgs)
                 {
@@ -129,7 +129,7 @@ internal sealed partial class MainWindow : Form
     TaskCompletionSource<bool> loadWaiter;
     public MainWindow()
     {
-        Text = "코레일 한 장 도우미 PC 0.11.2 · " + (Program.ManualDiagnostic ? "수동 진단 · 자동 기능 꺼짐" : "비공식");
+        Text = "코레일 한 장 도우미 PC 0.12.0 · " + (Program.ManualDiagnostic ? "수동 진단 · 자동 기능 꺼짐" : "비공식");
         settings = AppSettings.Load(Path.Combine(Program.DataRoot, "settings.json"));
         ClientSize = new Size(1320, 900); MinimumSize = new Size(1000, 760);
         StartPosition = FormStartPosition.CenterScreen; Font = new Font("맑은 고딕", 10);
@@ -168,7 +168,7 @@ internal sealed partial class MainWindow : Form
             {
                 dialog.Result.Save(Path.Combine(Program.DataRoot, "settings.json"));
                 settings = dialog.Result;
-                notificationStatus.Text = settings.Telegram.Enabled ? "텔레그램 알림 켜짐 · 예약 완료 확인 후 전송" : "텔레그램 알림 꺼짐";
+                notificationStatus.Text = settings.Telegram.Enabled ? "텔레그램 알림 켜짐 · 예약 완료 및 설정한 실행 보고" : "텔레그램 알림 꺼짐";
                 // Telegram changes do not affect the query or the selected trains.
                 // Only a changed journey filter requires a fresh helper instance.
                 if (ready && HelperPage(view.CoreWebView2.Source) && previousJourney != json.Serialize(settings.Journey)) view.Reload();
@@ -243,8 +243,15 @@ internal sealed partial class MainWindow : Form
                 view.CoreWebView2.WebMessageReceived += MessageReceived;
                 view.CoreWebView2.ScriptDialogOpening += MouseScriptDialog;
             }
-            view.CoreWebView2.NewWindowRequested += async delegate { await StopHelper("새 창이 열려 중지했습니다. 로그인·예약·결제 결과를 직접 확인하세요."); };
-            view.CoreWebView2.ProcessFailed += delegate { StopBookingQueue("브라우저가 종료되어 예약 순서를 중지했습니다."); StopMouseBooking(null); activeDocument = false; lease.Reset(); status.Text = "브라우저가 종료됐습니다. 앱을 다시 실행하세요."; };
+            view.CoreWebView2.NewWindowRequested += async delegate {
+                ReportAutomationFailure("새 창이 열려 자동 진행을 계속할 수 없습니다. 로그인·예약·결제 결과를 직접 확인하세요.", null, "page-notice");
+                await StopHelper("새 창이 열려 중지했습니다. 로그인·예약·결제 결과를 직접 확인하세요.");
+            };
+            view.CoreWebView2.ProcessFailed += delegate(object sender, CoreWebView2ProcessFailedEventArgs failure) {
+                ReportAutomationFailure("내장 브라우저 프로세스 오류가 감지됐습니다. WebView2 상태: " + failure.ProcessFailedKind, null, "browser-process");
+                StopBookingQueue("브라우저가 종료되어 예약 순서를 중지했습니다."); StopMouseBooking(null);
+                activeDocument = false; lease.Reset(); status.Text = "브라우저 오류가 감지됐습니다. 앱을 다시 실행하세요. (" + failure.ProcessFailedKind + ")";
+            };
             ready = true;
             if (Program.SelfTest) await RunTests();
             else Navigate(LocalBase + (Program.Demo ? "demo.html" : "welcome.html"));
@@ -296,7 +303,10 @@ internal sealed partial class MainWindow : Form
     void NavigationStarting(object sender, CoreWebView2NavigationStartingEventArgs e)
     {
         if (mouseBookingActive && mouseSubmitted && !MouseAllowedSource(e.Uri))
+        {
+            ReportAutomationFailure("예약을 확인할 공식 페이지를 벗어났습니다. 예약 결과를 확인할 수 없습니다.", null, "reservation-navigation");
             StopMouseBooking("예약을 확인할 공식 페이지를 벗어나 중지했습니다. 직접 결과를 확인하세요.");
+        }
         Uri uri;
         if (!Uri.TryCreate(e.Uri, UriKind.Absolute, out uri) || (uri.Scheme != "https" && e.Uri != "about:blank"))
         { e.Cancel = true; status.Text = "HTTPS 페이지를 앱 안에서 이용하세요."; return; }
@@ -317,8 +327,12 @@ internal sealed partial class MainWindow : Form
         if (e.NavigationId != navigationId) return;
         navigationPending = false;
         if (!e.IsSuccess && mouseBookingActive && mouseSubmitted)
+        {
+            ReportAutomationFailure("예약 결과 페이지를 열지 못했습니다. WebView2 상태: " + e.WebErrorStatus, null, "reservation-navigation");
             StopMouseBooking("예약 결과 페이지를 열지 못했습니다. 예매를 다시 누르지 말고 공식 예약내역을 확인하세요.");
+        }
         int page = navigation;
+        var reportOwner = automationReportContext;
         try
         {
             siteDiagnostics.AddNavigation(view.CoreWebView2.Source, e.IsSuccess, e.WebErrorStatus.ToString());
@@ -337,6 +351,7 @@ internal sealed partial class MainWindow : Form
                 string result = await view.CoreWebView2.ExecuteScriptAsync(script);
                 if (page != navigation) return;
                 bool injected = await EvalBool("!!window.KorailDesktopHelper");
+                if (page != navigation || reportOwner != automationReportContext) return;
                 if (!injected) throw new InvalidOperationException("도우미 초기화 실패. 연습 화면에서 다시 확인하세요.");
                 siteDiagnostics.AddAction("helper-initialized");
                 status.Text = siteDiagnostics.SiteBlocked ? SiteBlockMessage() : view.CoreWebView2.Source.StartsWith(LocalBase) ? "모의 연습 · 실제 코레일 요청/예약 없음" : "코레일 · 직접 조회한 뒤 도우미에서 열차 목록을 읽고 원하는 열차를 선택하세요.";
@@ -344,11 +359,17 @@ internal sealed partial class MainWindow : Form
             else status.Text = "사용 안내 · 코레일 열기 또는 연습 화면을 선택하세요.";
             if (page == navigation && loadWaiter != null) loadWaiter.TrySetResult(true);
         }
-        catch (Exception ex)
-        {
-            activeDocument = false; lease.Reset(); status.Text = ex.Message;
-            if (loadWaiter != null) loadWaiter.TrySetException(ex);
-        }
+        catch (Exception ex) { HandleNavigationFailure(page, reportOwner, ex); }
+    }
+    void HandleNavigationFailure(int page, AutomationReportContext reportOwner, Exception error)
+    {
+        // An awaited callback from an older page or run cannot stop its successor.
+        if (closing || page != navigation || reportOwner != automationReportContext) return;
+        ReportAutomationFailure("페이지를 준비하지 못했습니다. " + error.Message, error, "page-load");
+        if (queueRunning) StopBookingQueue(error.Message);
+        if (mouseBookingActive) StopMouseBooking(error.Message);
+        activeDocument = false; lease.Reset(); status.Text = error.Message;
+        if (loadWaiter != null) loadWaiter.TrySetException(error);
     }
     async void MessageReceived(object sender, CoreWebView2WebMessageReceivedEventArgs e)
     {
@@ -435,6 +456,7 @@ internal sealed partial class MainWindow : Form
     {
         if (!preserveQueue) StopBookingQueue(reason);
         StopMouseBooking(reason);
+        if (!preserveQueue) StopAutomationReports();
         int stoppedGeneration = mouseGeneration;
         activeDocument = false; lease.Reset(); int page = navigation;
         if (ready && !closing && !Program.ManualDiagnostic) try
@@ -712,6 +734,7 @@ internal sealed partial class MainWindow : Form
     {
         try
         {
+            await RunAutomationReportHostTests();
             await RunRefreshTimingTests();
             RenderSettingsPreview();
             await RunShellPreviewChecks();

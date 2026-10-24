@@ -97,4 +97,5 @@ $pageInputArgs = $commonArgs + @(('/out:' + $pageInputExe), (Join-Path $sourceRo
 if ($LASTEXITCODE -ne 0) { throw 'Page input dispatcher test compilation failed.' }
 & $pageInputExe
 if ($LASTEXITCODE -ne 0) { throw 'Page input dispatcher tests failed.' }
+& (Join-Path $sourceRoot 'test-automation-reports.ps1')
 Write-Output 'All C# tests passed, including a short native Windows sleep-prevention request/release. No real Telegram or Korail requests were made.'
